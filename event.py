@@ -26,7 +26,7 @@ class HarpEvent:
         self.queue = queue
         self.enabled = False
 
-    def _callback(self, ins):
+    def _callback(self, ins=-1):
         if self.enabled:
             self.message.timestamp = self.sync.read()
             self.message.payload = self.register.read(self.register.typ)
@@ -59,7 +59,7 @@ class PeriodicEvent(HarpEvent):
         self.timer = Timer(mode=Timer.PERIODIC, period=period, callback=self._callback)
 
 
-class LooseEvent:
+class LooseEvent(HarpEvent):
     """Loose event.
 
     Triggers a read of register at address, generating a status message, when callback is called.
@@ -79,6 +79,6 @@ class LooseEvent:
         self.queue = queue
         self.enabled = False
 
-    def callback(self, ins):
+    def callback(self, ins=-1):
         if self.enabled:
             self.queue.append(self.message)

@@ -13,7 +13,7 @@ from .register import (
     TimestampMicroReg,
     OperationalCtrlReg,
 )
-from .event import PeriodicEvent
+from .event import PeriodicEvent, HarpEvent
 from .clock import HarpClock
 import sys
 import uselect
@@ -88,7 +88,7 @@ class HarpDevice:
             self.txMessages,
             1000,
         )
-        self.events = [self.aliveEvent]
+        self.events: list[HarpEvent] = [self.aliveEvent]
 
         self.tasks = [self._stream_task(), self._blink_task(), self._clock_task()]
 
@@ -239,4 +239,4 @@ class HarpDevice:
                     self.monitor.write("TX msg: " + txMessage.to_string() + "\n")
                 sys.stdout.buffer.write(txMessage.buffer)
 
-            await uasyncio.sleep(0.01)
+            await uasyncio.sleep(0)
