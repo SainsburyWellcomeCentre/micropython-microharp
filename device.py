@@ -11,7 +11,7 @@ from .register import (
     ReadWriteReg,
     TimestampSecondReg,
     TimestampMicroReg,
-    OperationalCtrlReg,
+    OperationalCtrlReg
 )
 from .event import PeriodicEvent, HarpEvent
 from .clock import HarpClock

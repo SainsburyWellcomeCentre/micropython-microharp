@@ -68,17 +68,8 @@ class LooseEvent(HarpEvent):
     allowing for lengthy computation or I/O operations at the expense of trigger latency.
     """
 
-    def __init__(self, address, typ, queue):
-        self.message = HarpTxMessage(
-            HarpMessage.EVENT,
-            HarpMessage.offset(~HarpTypes.HAS_TIMESTAMP) - 1,
-            address,
-            typ,
-        )
-        self.message.calc_set_checksum()
-        self.queue = queue
-        self.enabled = False
+    def __init__(self, address, register, sync, queue):
+        super().__init__(address, register, sync, queue)
 
     def callback(self, ins=-1):
-        if self.enabled:
-            self.queue.append(self.message)
+        self._callback()
