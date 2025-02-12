@@ -5,7 +5,6 @@ from machine import Timer
 from .type import HarpTypes
 from .message import HarpMessage, HarpTxMessage
 
-
 class HarpEvent:
     """Base class, creates the event message and provides message queue binding.
 
@@ -32,7 +31,6 @@ class HarpEvent:
             self.message.payload = self.register.read(self.register.typ)
             self.message.calc_set_checksum()
             self.queue.append(self.message)
-
 
 class PinEvent(HarpEvent):
     """Pin event.

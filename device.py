@@ -6,13 +6,7 @@ from micropython import const
 
 from .type import HarpTypes
 from .message import HarpMessage, HarpRxMessage, HarpTxMessage
-from .register import (
-    ReadOnlyReg,
-    ReadWriteReg,
-    TimestampSecondReg,
-    TimestampMicroReg,
-    OperationalCtrlReg
-)
+from .register import ReadOnlyReg, ReadWriteReg, TimestampSecondReg, TimestampMicroReg, OperationalCtrlReg
 from .event import PeriodicEvent, HarpEvent
 from .clock import HarpClock
 import sys
@@ -129,15 +123,15 @@ class HarpDevice:
         buf = bytearray(6)
         while True:
             if self.clockSync.any() >= 6:
-                self.blink_flag = False
-                self.aliveEvent.timer.deinit()
-
                 self.clockSync.readinto(buf)
                 self.clock.write(buf)
 
                 self.aliveEvent._callback(0)
-                self.aliveEvent.timer.init(mode=Timer.PERIODIC, period=1000, callback=self.aliveEvent._callback)
-                self.blink_flag = True
+                self.led.value(buf[3] & 0x2)
+
+                if self.blink_flag:
+                    self.blink_flag = False
+                    self.aliveEvent.timer.deinit()
 
             await uasyncio.sleep(0)
 
@@ -167,16 +161,14 @@ class HarpDevice:
         Toggles the led to indicate the device operation mode.
         """
         # print('HarpDevice._blink_task()')
-        while True:
-            while self.blink_flag:
-                if self.registers[HarpDevice.R_OPERATION_CTRL].VISUALEN:
-                    if self.registers[HarpDevice.R_OPERATION_CTRL].OPLEDEN:
-                        self.led.toggle()
-                    interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
-                else:
-                    self.led.on()
-                await uasyncio.sleep(interval)
-            await uasyncio.sleep(0)
+        while self.blink_flag:
+            if self.registers[HarpDevice.R_OPERATION_CTRL].VISUALEN:
+                if self.registers[HarpDevice.R_OPERATION_CTRL].OPLEDEN:
+                    self.led.toggle()
+                interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
+            else:
+                self.led.on()
+            await uasyncio.sleep(interval)
 
     async def main(self):
         """Device main function, must be called using uasyncio.run().

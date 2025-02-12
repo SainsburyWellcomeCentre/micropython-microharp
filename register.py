@@ -2,7 +2,6 @@
 
 from micropython import const
 from .type import HarpTypes
-from struct import unpack
 
 
 class HarpRegister:
@@ -111,7 +110,7 @@ class TimestampSecondReg(HarpRegister):
 
     def read(self, typ):
         super().read(typ)
-        return (unpack("I", self.sync.read()),)
+        return (self.sync.read()[0],)
 
     def write(self, typ, value):
         super().write(typ, value)
@@ -130,7 +129,7 @@ class TimestampMicroReg(HarpRegister):
 
     def read(self, typ):
         super().read(typ)
-        return (unpack("IH", self.sync.read())[1],)
+        return (self.sync.read()[1],)
 
     def write(self, typ, value):
         raise TypeError("TimestampMicroReg.write().")

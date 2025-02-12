@@ -16,7 +16,7 @@ class HarpClock:
     # The value that system tick wraps around after 30-bits"""
     TICK_MAX = const(1_073_741)  # ms
     READ_OFFSET = const(10)
-    UART_OFFSET = const(272)
+    UART_OFFSET = const(75)
 
     def __init__(self):
         self.custom_offset = 0
@@ -24,7 +24,8 @@ class HarpClock:
         self._offset_us = 0
         self.overflow_count = 0
         self.timer = Timer(period=self.TICK_MAX, mode=Timer.PERIODIC, callback=self._count)
-        self.buf = bytearray(6)
+        self.timestamp_s = 0
+        self.timestamp_us = 0
 
     def read(self):
         """
@@ -33,13 +34,13 @@ class HarpClock:
         """
         self._read_count(time.ticks_us())
 
-        return self.buf
+        return (self.timestamp_s, self.timestamp_us)
 
     def write(self, buf):
         """
         Overwriting the Harp timestamp in microsecond
         """
-        self._offset_s = self._unpack(buf) - self.overflow_count + 1
+        self._offset_s = self._unpack(buf) - self.overflow_count
         self._offset_us = -self.UART_OFFSET - time.ticks_us() + self.READ_OFFSET
 
     def _count(self, t):
@@ -55,6 +56,5 @@ class HarpClock:
     def _read_count(self, tick: int):
         tick_s = int(self._offset_s + self.overflow_count)
         tick_us = int(self._offset_us - self.READ_OFFSET) + tick
-        buf = ptr32(self.buf)
-        buf[0] = (tick_us // 1_000_000) + tick_s
-        buf[1] = ((tick_us % 1_000_000) >> 5) & 0xFFFF
+        self.timestamp_s = (tick_us // 1_000_000) + tick_s
+        self.timestamp_us = ((tick_us % 1_000_000) >> 5) & 0xFFFF
