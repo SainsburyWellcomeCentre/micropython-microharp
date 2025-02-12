@@ -83,7 +83,7 @@ class HarpMessage:
 
     @timestamp.setter
     def timestamp(self, value):
-        pack_into("IH", self.buffer, 5, *value)
+        self.buffer[5:10] = value
 
     @property
     def payload(self):
