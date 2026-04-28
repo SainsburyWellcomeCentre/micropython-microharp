@@ -10,10 +10,10 @@ from .register import ReadOnlyReg, ReadWriteReg, TimestampSecondReg, TimestampMi
 from .event import PeriodicEvent, HarpEvent
 from .clock import HarpClock
 import sys
-import uselect
 from machine import Pin, UART
 from machine import Timer
-
+from .lib.cdc import CDCInterface
+from .lib import core as usb
 
 class HarpDevice:
     """Harp device implementing the common registers and functionality.
@@ -27,8 +27,8 @@ class HarpDevice:
     R_HW_VERSION_H = const(1)
     R_HW_VERSION_L = const(2)
     R_ASSEMBLY_VERSION = const(3)
-    R_HARP_VERSION_H = const(4)
-    R_HARP_VERSION_L = const(5)
+    R_CORE_VERSION_H = const(4)
+    R_CORE_VERSION_L = const(5)
     R_FW_VERSION_H = const(6)
     R_FW_VERSION_L = const(7)
     R_TIMESTAMP_SECOND = const(8)
@@ -37,12 +37,18 @@ class HarpDevice:
     R_RESET_DEV = const(11)
     R_DEVICE_NAME = const(12)
     R_SERIAL_NUMBER = const(13)
+    R_CLOCK_CONFIG = const(14)
+    R_TIMESTAMP_OFFSET = const(15)
+    R_UID = const(16)
+    R_TAG = const(17)
+    R_HEARTBEAT = const(18)
+    R_VERSION = const(19)
     CLK_BUAD = const(100_000)
     CLK_LEN = const(6)
 
     ledIntervals = (2.0, 1.0, 0.05, 0.5)
 
-    def __init__(self, led, clocksync: UART, rxqlen=16, txqlen=16, monitor=None):
+    def __init__(self, led, clocksync: UART, rxqlen=16, txqlen=16, monitor=True):
         """Constructor.
 
         Connects the logical device to its physical interfaces and creates the register map.
@@ -52,27 +58,46 @@ class HarpDevice:
 
         self.clock = HarpClock()
         self.led = led
-        self.monitor = monitor
+        self.monitor = sys.stdout if monitor else None
+  
         self.blink_flag = True
 
-        self.stream = uselect.poll()
-        self.stream.register(sys.stdin, uselect.POLLIN)
+        self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=512)
+        usb.get().init(
+            self.cdc,
+            builtin_driver=True,
+        )
+        self.cdc.set_line_state_cb(self._line_state_cb)
 
         self.rxMessages = deque((), rxqlen)
         self.txMessages = deque((), txqlen)
         self.clockSync = clocksync
 
         self.registers = {
-            HarpDevice.R_WHO_AM_I: ReadOnlyReg(HarpTypes.U16, (0,)),
-            HarpDevice.R_HW_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
-            HarpDevice.R_HW_VERSION_L: ReadOnlyReg(HarpTypes.U8),
-            HarpDevice.R_FW_VERSION_H: ReadOnlyReg(HarpTypes.U8),
-            HarpDevice.R_FW_VERSION_L: ReadOnlyReg(HarpTypes.U8, (1,)),
+            HarpDevice.R_WHO_AM_I: ReadOnlyReg(HarpTypes.U16),
             HarpDevice.R_TIMESTAMP_SECOND: TimestampSecondReg(self.clock),
             HarpDevice.R_TIMESTAMP_MICRO: TimestampMicroReg(self.clock),
             HarpDevice.R_OPERATION_CTRL: OperationalCtrlReg(self._ctrl_hook),
-            HarpDevice.R_DEVICE_NAME: ReadWriteReg(HarpTypes.U8, tuple(b"Microharp Device")),
-            HarpDevice.R_SERIAL_NUMBER: ReadWriteReg(HarpTypes.U16),
+            HarpDevice.R_HEARTBEAT: ReadOnlyReg(HarpTypes.U16),
+            HarpDevice.R_VERSION: ReadOnlyReg(HarpTypes.U8, (0,) * 32),
+
+            # Optional, device specific registers.
+            HarpDevice.R_RESET_DEV: ReadWriteReg(HarpTypes.U8, (0,)),
+            HarpDevice.R_DEVICE_NAME: ReadWriteReg(HarpTypes.U8, tuple(b"Microharp Device" + bytes(25 - len(b"Microharp Device")))),  # 25-byte null-padded
+            HarpDevice.R_CLOCK_CONFIG: ReadWriteReg(HarpTypes.U8, (0,)),
+            HarpDevice.R_UID: ReadOnlyReg(HarpTypes.U8, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+            HarpDevice.R_TAG: ReadOnlyReg(HarpTypes.U8, (0, 0, 0, 0, 0, 0, 0, 0)),
+
+            # Deprecated registers, return 0 if called.
+            HarpDevice.R_HW_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
+            HarpDevice.R_HW_VERSION_L: ReadOnlyReg(HarpTypes.U8, (0,)),
+            HarpDevice.R_ASSEMBLY_VERSION: ReadOnlyReg(HarpTypes.U8, (0,)),
+            HarpDevice.R_CORE_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
+            HarpDevice.R_CORE_VERSION_L: ReadOnlyReg(HarpTypes.U8, (0,)),
+            HarpDevice.R_FW_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
+            HarpDevice.R_FW_VERSION_L: ReadOnlyReg(HarpTypes.U8, (0,)),
+            HarpDevice.R_SERIAL_NUMBER: ReadOnlyReg(HarpTypes.U16, (0,)),
+            HarpDevice.R_TIMESTAMP_OFFSET: ReadOnlyReg(HarpTypes.U8, (0,)),
         }
 
         self.aliveEvent = PeriodicEvent(
@@ -82,9 +107,38 @@ class HarpDevice:
             self.txMessages,
             1000,
         )
-        self.events: list[HarpEvent] = [self.aliveEvent]
+        self.heartbeatEvent = PeriodicEvent(
+            HarpDevice.R_HEARTBEAT,
+            self.registers[HarpDevice.R_HEARTBEAT],
+            self.clock,
+            self.txMessages,
+            1000,
+        )
+        self.events: list[HarpEvent] = [self.aliveEvent, self.heartbeatEvent]
+
+        self._pending_dump = False
 
         self.tasks = [self._stream_task(), self._blink_task(), self._clock_task()]
+
+    DEVICE_NAME_LEN = const(25)
+
+    def set_name(self, name: str):
+        """Set the device name (max 24 chars, null-padded to 25 bytes)."""
+        encoded = name.encode("ascii")[:HarpDevice.DEVICE_NAME_LEN - 1]
+        padded = encoded + bytes(HarpDevice.DEVICE_NAME_LEN - len(encoded))
+        self.registers[HarpDevice.R_DEVICE_NAME].value = tuple(padded)
+
+    def _line_state_cb(self, line_state):
+        """Private member function.
+
+        CDC line state callback. Resets the device to standby when the host connects (DTR high),
+        preventing spurious event frames before the host writes the operation control register.
+        """
+        if line_state & 0x01:  # DTR set - host opened the port
+            op_ctrl = self.registers[HarpDevice.R_OPERATION_CTRL]
+            op_ctrl.value = (op_ctrl.value[0] & ~0x03,)  # Clear OP_MODE to STANDBY
+            for event in self.events:
+                event.enabled = False
 
     def _ctrl_hook(self):
         """Private member function.
@@ -94,13 +148,28 @@ class HarpDevice:
 
         op_ctrl = self.registers[HarpDevice.R_OPERATION_CTRL]
 
+        isActive = op_ctrl.OP_MODE != OperationalCtrlReg.STANDBY_MODE
+        tmp = self.registers[HarpDevice.R_HEARTBEAT].value[0]
+        if isActive:
+            tmp |= 0x01   # set IS_ACTIVE
+        else:
+            tmp &= ~0x03  # clear IS_ACTIVE and IS_SYNCHRONIZED
+        self.registers[HarpDevice.R_HEARTBEAT].value = (tmp,)
+
         self.led.value(op_ctrl.OPLEDEN)
 
-        event_en = op_ctrl.OP_MODE != OperationalCtrlReg.STANDBY_MODE
+        event_en = isActive
+
+        if op_ctrl.DUMP:
+            self._pending_dump = True
+            op_ctrl.value = (op_ctrl.value[0] & ~0x08,)
 
         for event in self.events:
             if event == self.aliveEvent:
-                event.enabled = op_ctrl.ALIVE_EN and event_en
+                # HEARTBEAT_EN takes precedence over ALIVE_EN per spec
+                event.enabled = op_ctrl.ALIVE_EN and not op_ctrl.HEARTBEAT_EN and event_en
+            elif event == self.heartbeatEvent:
+                event.enabled = op_ctrl.HEARTBEAT_EN and event_en
             else:
                 event.enabled = event_en
 
@@ -110,8 +179,9 @@ class HarpDevice:
         Reads nbytes from stream into buf in the largest blocks available, whilst playing nicely.
         """
         while nbytes > 0:
-            if self.stream.poll(0):
-                buf.extend(sys.stdin.buffer.read(1))
+            chunk = self.cdc.read(1)
+            if chunk:
+                buf.extend(chunk)
                 nbytes -= 1
             await uasyncio.sleep(0)
 
@@ -126,12 +196,18 @@ class HarpDevice:
                 self.clockSync.readinto(buf)
                 self.clock.write(buf)
 
+                # Set IS_SYNCHRONIZED bit in R_HEARTBEAT
+                tmp = self.registers[HarpDevice.R_HEARTBEAT].value[0]
+                self.registers[HarpDevice.R_HEARTBEAT].value = (tmp | 0x02,)
+
                 self.aliveEvent._callback(0)
+                self.heartbeatEvent._callback(0)
                 self.led.value(buf[3] & 0x2)
 
                 if self.blink_flag:
                     self.blink_flag = False
                     self.aliveEvent.timer.deinit()
+                    self.heartbeatEvent.timer.deinit()
 
             await uasyncio.sleep(0)
 
@@ -187,9 +263,6 @@ class HarpDevice:
                     rxMessage = self.rxMessages.popleft()
                     if self.monitor:
                         self.monitor.write("RX msg: " + rxMessage.to_string() + "\n")
-                    # Perform write operation.
-                    if rxMessage.messageType == HarpMessage.WRITE:
-                        self.registers[rxMessage.address].write(rxMessage.payloadType, rxMessage.payload)
                     # Prepare response.
                     length = (
                         len(self.registers[rxMessage.address]) * HarpTypes.size(rxMessage.payloadType)
@@ -203,6 +276,10 @@ class HarpDevice:
                         rxMessage.payloadType,
                         self.clock.read(),
                     )
+
+                    # Perform write operation (may enqueue DUMP messages via hook).
+                    if rxMessage.messageType == HarpMessage.WRITE:
+                        self.registers[rxMessage.address].write(rxMessage.payloadType, rxMessage.payload)
 
                     # Perform read operation.
                     txMessage.payload = self.registers[rxMessage.address].read(rxMessage.payloadType)
@@ -220,15 +297,36 @@ class HarpDevice:
                     if rxMessage.messageType == HarpMessage.WRITE:
                         txMessage.payload = rxMessage.payload
 
-                # Format and post response to transmit queue.
-                txMessage.calc_set_checksum()
-                self.txMessages.append(txMessage)
+                # Format and post response to transmit queue (unless muted).
+                if not self.registers[HarpDevice.R_OPERATION_CTRL].MUTE_RPL:
+                    txMessage.calc_set_checksum()
+                    self.txMessages.append(txMessage)
+
+                # Dump all registers after the operation control response.
+                if self._pending_dump:
+                    self._pending_dump = False
+                    for address, reg in self.registers.items():
+                        length = (
+                            len(reg) * HarpTypes.size(reg.typ)
+                            + HarpMessage.offset(reg.typ | HarpTypes.HAS_TIMESTAMP)
+                            - 1
+                        )
+                        dumpMessage = HarpTxMessage(
+                            HarpMessage.READ,
+                            length,
+                            address,
+                            reg.typ | HarpTypes.HAS_TIMESTAMP,
+                            self.clock.read(),
+                        )
+                        dumpMessage.payload = reg.read(reg.typ)
+                        dumpMessage.calc_set_checksum()
+                        self.txMessages.append(dumpMessage)
 
             # Process tx message queue.
             if len(self.txMessages) > 0:
                 txMessage = self.txMessages.popleft()
                 if self.monitor:
                     self.monitor.write("TX msg: " + txMessage.to_string() + "\n")
-                sys.stdout.buffer.write(txMessage.buffer)
+                self.cdc.write(txMessage.buffer)
 
             await uasyncio.sleep(0)

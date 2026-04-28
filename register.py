@@ -70,6 +70,10 @@ class OperationalCtrlReg(ReadWriteReg):
         return self.value[0] & 0x03
 
     @property
+    def HEARTBEAT_EN(self):
+        return bool(self.value[0] & 0x04)
+
+    @property
     def DUMP(self):
         return bool(self.value[0] & 0x08)
 
