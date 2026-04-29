@@ -1,5 +1,6 @@
 """Harp base and common register classes."""
 
+from .clock import HarpClock
 from micropython import const
 from .type import HarpTypes
 
@@ -105,7 +106,7 @@ class OperationalCtrlReg(ReadWriteReg):
 class TimestampSecondReg(HarpRegister):
     """Timestamp seconds register, delegates read and write operations to harpsync."""
 
-    def __init__(self, sync):
+    def __init__(self, sync: HarpClock):
         super().__init__(HarpTypes.U32)
         self.sync = sync
 
@@ -124,7 +125,7 @@ class TimestampSecondReg(HarpRegister):
 class TimestampMicroReg(HarpRegister):
     """Timestamp microseconds register, delegates read operations to harpsync."""
 
-    def __init__(self, sync):
+    def __init__(self, sync: HarpClock):
         super().__init__(HarpTypes.U16)
         self.sync = sync
 
