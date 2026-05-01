@@ -53,8 +53,6 @@ class HarpClock:
         self._anchor_ticks: int = 0    # ticks captured at last sync reception
         self._anchor_s: int = 0        # whole seconds at anchor
         self._anchor_sub_us: int = 0   # sub-second microseconds at anchor
-        self.timestamp_s: int = 0
-        self.timestamp_us: int = 0
 
     def read(self):
         """Return current Harp timestamp as (seconds, microseconds/32)."""
@@ -80,21 +78,33 @@ else:
         return time.ticks_us()
 
 
-def _read(self) -> tuple[int, int]:
-    """Return (seconds, microseconds/32) Harp timestamp."""
+@micropython.viper
+def _read_viper(self) -> object:
+    t: int = int(_ticks_us())
+    anchor_ticks: int = int(self._anchor_ticks)
+    anchor_s: int = int(self._anchor_s)
+    sub_us: int = t - anchor_ticks - 50
+    bonus: int = sub_us // 1_000_000
+    s: int = anchor_s + bonus
+    us: int = (sub_us % 1_000_000) >> 5
+    return (s, us)
+
+
+def _read_py(self) -> tuple[int, int]:
     t = _ticks_us()
-    sub_us = t - self._anchor_ticks - 10  # elapsed minus _read() latency
+    sub_us = t - self._anchor_ticks - 50
     bonus = sub_us // 1_000_000
     s = self._anchor_s + bonus
-    us = (sub_us - bonus * 1_000_000) >> 5
-    self.timestamp_s = s
-    self.timestamp_us = us
+    us = (sub_us % 1_000_000) >> 5
     return (s, us)
+
+
+_read = _read_viper if _USE_HW_TIMER else _read_py
 
 
 def _write(self, sec: int):
     """Process a uint32 Harp sync second."""
     self._anchor_s = sec
-    self._anchor_sub_us = 0   # = 1_000_000 - SYNC_OFFSET_US (672)
+    # self._anchor_sub_us = 999_328   # = 1_000_000 - SYNC_OFFSET_US (672)
     self._anchor_ticks = _ticks_us()
 

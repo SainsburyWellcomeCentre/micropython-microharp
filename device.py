@@ -14,6 +14,7 @@ from machine import Pin, UART
 from machine import Timer
 from .lib.cdc import CDCInterface
 from .lib import core as usb
+import os
 
 class HarpDevice:
     """Harp device implementing the common registers and functionality.
@@ -59,10 +60,13 @@ class HarpDevice:
         self.clock = HarpClock()
         self.led = led
         self.monitor = sys.stdout if monitor else None
-  
+        if not self.monitor:
+            # Passing None detaches the REPL from the primary terminal (slot 0)
+            os.dupterm(None, 0)
+
         self.blink_flag = True
 
-        self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=512)
+        self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=128)
         usb.get().init(
             self.cdc,
             builtin_driver=True,
@@ -109,6 +113,7 @@ class HarpDevice:
         )
         self.events: list[HarpEvent] = [self.aliveEvent]
 
+        self._blink_task_handle = None
         self.tasks = [self._stream_task(), self._blink_task(), self._clock_task()]
 
     DEVICE_NAME_LEN = const(25)
@@ -197,10 +202,14 @@ class HarpDevice:
                 self.clock.write(buf[3] | (buf[4] << 8) | (buf[5] << 16) | (buf[0] << 24))
                 
                 self.aliveEvent._callback(0)
-                self.led.value(buf[3] & 0x2)
+                if self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE == OperationalCtrlReg.STANDBY_MODE:
+                    self.led.value(buf[3] & 0x4)
+                else:
+                    self.led.value(buf[3] & 0x2)
 
-                if self.blink_flag:
-                    self.blink_flag = False
+                if self._blink_task_handle:
+                    self._blink_task_handle.cancel()
+                    self._blink_task_handle = None
                     self.aliveEvent.timer.deinit()
 
             await uasyncio.sleep(0)
@@ -231,14 +240,13 @@ class HarpDevice:
         Toggles the led to indicate the device operation mode.
         """
         # print('HarpDevice._blink_task()')
-        while self.blink_flag:
-            if self.registers[HarpDevice.R_OPERATION_CTRL].VISUALEN:
-                if self.registers[HarpDevice.R_OPERATION_CTRL].OPLEDEN:
-                    self.led.toggle()
-                interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
-            else:
-                self.led.on()
-            await uasyncio.sleep(interval)
+        if self.registers[HarpDevice.R_OPERATION_CTRL].VISUALEN:
+            if self.registers[HarpDevice.R_OPERATION_CTRL].OPLEDEN:
+                self.led.toggle()
+            interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
+        else:
+            self.led.on()
+        await uasyncio.sleep(interval)
 
     async def main(self):
         """Device main function, must be called using uasyncio.run().
@@ -246,8 +254,11 @@ class HarpDevice:
         Creates and launches the device co-operative tasks and executes the main application loop.
         """
         # print('HarpDevice.main()')
-        for task in self.tasks:
-            uasyncio.create_task(task)
+        for i, task in enumerate(self.tasks):
+            if i == 1:  # _blink_task
+                self._blink_task_handle = uasyncio.create_task(task)
+            else:
+                uasyncio.create_task(task)
 
         while True:
             # Process rx message queue.
