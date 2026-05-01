@@ -62,7 +62,7 @@ class HarpDevice:
         self.monitor = sys.stdout if monitor else None
         self.blink_flag = True
 
-        self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=128)
+        self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=512)
         usb.get().init(
             self.cdc,
             builtin_driver=monitor,
@@ -221,15 +221,15 @@ class HarpDevice:
 
         Toggles the led to indicate the device operation mode.
         """
-        # print('HarpDevice._blink_task()')
-        if self.registers[HarpDevice.R_OPERATION_CTRL].VISUALEN:
-            if self.registers[HarpDevice.R_OPERATION_CTRL].OPLEDEN:
-                self.led.toggle()
-            interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
-        else:
-            self.led.on()
-            interval = 1.0
-        await uasyncio.sleep(interval)
+        while True:
+            if self.registers[HarpDevice.R_OPERATION_CTRL].VISUALEN:
+                if self.registers[HarpDevice.R_OPERATION_CTRL].OPLEDEN:
+                    self.led.toggle()
+                interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
+            else:
+                self.led.on()
+                interval = 1.0
+            await uasyncio.sleep(interval)
 
     async def main(self):
         """Device main function, must be called using uasyncio.run().

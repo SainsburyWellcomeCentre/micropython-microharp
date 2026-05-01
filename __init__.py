@@ -26,6 +26,6 @@ _attrs = {
 def __getattr__(attr):
     if attr in _attrs:
         module_name = _attrs[attr]
-        module = __import__(f"microharp.{module_name}", fromlist=[attr])
+        module = __import__(f"microharp.{module_name}", None, None, [attr])
         return getattr(module, attr)
     raise AttributeError(f"module 'microharp' has no attribute '{attr}'")
