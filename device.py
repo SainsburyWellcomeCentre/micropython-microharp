@@ -60,16 +60,12 @@ class HarpDevice:
         self.clock = HarpClock()
         self.led = led
         self.monitor = sys.stdout if monitor else None
-        if not self.monitor:
-            # Passing None detaches the REPL from the primary terminal (slot 0)
-            os.dupterm(None, 0)
-
         self.blink_flag = True
 
         self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=128)
         usb.get().init(
             self.cdc,
-            builtin_driver=True,
+            builtin_driver=monitor,
         )
         self.cdc.set_line_state_cb(self._line_state_cb)
 
@@ -113,6 +109,7 @@ class HarpDevice:
         )
         self.events: list[HarpEvent] = [self.aliveEvent]
 
+        self._dump_pending = False
         self._blink_task_handle = None
         self.tasks = [self._stream_task(), self._blink_task(), self._clock_task()]
 
@@ -154,23 +151,8 @@ class HarpDevice:
         event_en = op_ctrl.OP_MODE != OperationalCtrlReg.STANDBY_MODE
 
         if op_ctrl.DUMP:
-            for address, reg in self.registers.items():
-                length = (
-                    len(reg) * HarpTypes.size(reg.typ)
-                    + HarpMessage.offset(reg.typ | HarpTypes.HAS_TIMESTAMP)
-                    - 1
-                )
-                txMessage = HarpTxMessage(
-                    HarpMessage.READ,
-                    length,
-                    address,
-                    reg.typ | HarpTypes.HAS_TIMESTAMP,
-                    self.clock.read(),
-                )
-                txMessage.payload = reg.read(reg.typ)
-                txMessage.calc_set_checksum()
-                self.txMessages.append(txMessage)
-            op_ctrl.value = (op_ctrl.value[0] & ~0x08,)
+            op_ctrl.value = (op_ctrl.value[0] & ~0x08,)  # Clear bit so write reply reflects it.
+            self._dump_pending = True
 
         for event in self.events:
             if event == self.aliveEvent:
@@ -203,9 +185,9 @@ class HarpDevice:
                 
                 self.aliveEvent._callback(0)
                 if self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE == OperationalCtrlReg.STANDBY_MODE:
-                    self.led.value(buf[3] & 0x4)
+                    self.led.value(not (buf[3] & 0x4))
                 else:
-                    self.led.value(buf[3] & 0x2)
+                    self.led.value(not (buf[3] & 0x2))
 
                 if self._blink_task_handle:
                     self._blink_task_handle.cancel()
@@ -246,6 +228,7 @@ class HarpDevice:
             interval = HarpDevice.ledIntervals[self.registers[HarpDevice.R_OPERATION_CTRL].OP_MODE]
         else:
             self.led.on()
+            interval = 1.0
         await uasyncio.sleep(interval)
 
     async def main(self):
@@ -306,6 +289,26 @@ class HarpDevice:
                 if not self.registers[HarpDevice.R_OPERATION_CTRL].MUTE_RPL:
                     txMessage.calc_set_checksum()
                     self.txMessages.append(txMessage)
+
+                # Enqueue DUMP messages after the write reply.
+                if self._dump_pending:
+                    self._dump_pending = False
+                    for address, reg in self.registers.items():
+                        length = (
+                            len(reg) * HarpTypes.size(reg.typ)
+                            + HarpMessage.offset(reg.typ | HarpTypes.HAS_TIMESTAMP)
+                            - 1
+                        )
+                        dumpMessage = HarpTxMessage(
+                            HarpMessage.READ,
+                            length,
+                            address,
+                            reg.typ | HarpTypes.HAS_TIMESTAMP,
+                            self.clock.read(),
+                        )
+                        dumpMessage.payload = reg.read(reg.typ)
+                        dumpMessage.calc_set_checksum()
+                        self.txMessages.append(dumpMessage)
 
             # Process tx message queue.
             if len(self.txMessages) > 0:
