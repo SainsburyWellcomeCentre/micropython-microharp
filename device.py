@@ -49,7 +49,7 @@ class HarpDevice:
 
     ledIntervals = (2.0, 1.0, 0.05, 0.5)
 
-    def __init__(self, led, clocksync: UART, rxqlen=16, txqlen=16, monitor=True):
+    def __init__(self, led, clocksync: UART, rxqlen=64, txqlen=64, monitor=True):
         """Constructor.
 
         Connects the logical device to its physical interfaces and creates the register map.
@@ -62,7 +62,7 @@ class HarpDevice:
         self.monitor = sys.stdout if monitor else None
         self.blink_flag = True
 
-        self.cdc = CDCInterface(timeout=0, txbuf=512, rxbuf=512)
+        self.cdc = CDCInterface(baudrate=1_000_000, timeout=0, txbuf=2048, rxbuf=512)
         usb.get().init(
             self.cdc,
             builtin_driver=monitor,
@@ -91,7 +91,7 @@ class HarpDevice:
             # Deprecated registers, return 0 if called.
             HarpDevice.R_HW_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
             HarpDevice.R_HW_VERSION_L: ReadOnlyReg(HarpTypes.U8, (0,)),
-            HarpDevice.R_ASSEMBLY_VERSION: ReadOnlyReg(HarpTypes.U8, (1,)),
+            HarpDevice.R_ASSEMBLY_VERSION: ReadOnlyReg(HarpTypes.U8, (0,)),
             HarpDevice.R_HARP_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
             HarpDevice.R_HARP_VERSION_L: ReadOnlyReg(HarpTypes.U8, (0,)),
             HarpDevice.R_FW_VERSION_H: ReadOnlyReg(HarpTypes.U8, (1,)),
