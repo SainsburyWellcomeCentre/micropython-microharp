@@ -34,7 +34,7 @@ Tests covered:
     - events are silently dropped in Standby mode
 
 Run from the repo root:
-    python tests/test_microharp.py
+    python -B test/test.py
 """
 
 import sys
@@ -131,7 +131,6 @@ def check(cond, label):
     global ok, fail
     if cond:
         ok += 1
-        print("  PASS", label)
     else:
         fail += 1
         print("  FAIL", label)
@@ -152,6 +151,7 @@ def run(coro):
 # ===========================================================================
 # Framing tests
 # ===========================================================================
+print("Testing: Framing")
 from microharp.framing import (
     encode_into,
     FrameDecoder,
@@ -168,13 +168,10 @@ from microharp.framing import (
 )
 
 # ---- Test 1: encode → decode round-trip, float register, no timestamp ------
-print("Framing — Test 1: encode/decode float register without timestamp")
 buf = bytearray(64)
 _float_val = 3.14
 _float_bytes = struct.pack("<f", _float_val)
 n = encode_into(buf, MSG_WRITE, address=42, port=0, payload_type=PT_FLOAT, payload=_float_bytes, payload_len=4)
-print("  encoded bytes:", buf[:n].hex())
-
 dec = FrameDecoder(max_payload=32)
 frames = list(dec.feed(buf[:n]))
 check(len(frames) == 1, "decoded 1 frame")
@@ -191,7 +188,6 @@ check(abs(_decoded_val - _float_val) < 1e-5, "payload float ≈ 3.14")
 
 
 # ---- Test 2: with timestamp, U32 payload ------------------------------------
-print("Framing — Test 2: encode/decode WITH timestamp, U32 payload")
 n = encode_into(
     buf,
     MSG_EVENT,
@@ -219,7 +215,6 @@ check(bytes(mv[po : po + pl]) == b"\x01\x02\x03\x04", "payload bytes")
 
 
 # ---- Test 3: multiple frames concatenated -----------------------------------
-print("Framing — Test 3: two frames in a single buffer")
 combo = bytearray()
 b1 = bytearray(64)
 n1 = encode_into(b1, MSG_READ, 1, 0, PT_U8, b"\x00", 1)
@@ -234,7 +229,6 @@ check(len(frames) == 2, "decoded 2 frames")
 
 
 # ---- Test 4: partial / chunked feed -----------------------------------------
-print("Framing — Test 4: byte-by-byte feed")
 dec4 = FrameDecoder(max_payload=32)
 b3 = bytearray(64)
 n3 = encode_into(b3, MSG_WRITE, 7, 0, PT_U16, b"\x12\x34", 2)
@@ -245,7 +239,6 @@ check(len(got) == 1, "byte-by-byte still produces 1 frame")
 
 
 # ---- Test 5: bad checksum is dropped ----------------------------------------
-print("Framing — Test 5: bad checksum is silently dropped")
 b4 = bytearray(64)
 n4 = encode_into(b4, MSG_WRITE, 9, 0, PT_U8, b"\x55", 1)
 b4[n4 - 1] ^= 0xFF  # corrupt the checksum
@@ -255,7 +248,6 @@ check(len(frames) == 0, "0 frames yielded for bad checksum")
 
 
 # ---- Test 6: garbage prefix → resync ----------------------------------------
-print("Framing — Test 6: garbage prefix is skipped")
 junk = bytearray(b"\x00\xff\x55")
 b5 = bytearray(64)
 n5 = encode_into(b5, MSG_READ, 1, 0, PT_U8, b"\x00", 1)
@@ -268,8 +260,7 @@ check(len(frames) == 1, "decoder resynchronizes past junk")
 # ===========================================================================
 # Clock tests
 # ===========================================================================
-print("Clock.set_seconds")
-
+print("Testing: Clock")
 from microharp.clock import Clock, _ticks_us, US_PER_TICK
 
 clk = Clock()
@@ -302,8 +293,7 @@ check((ticks_comp - ticks_no_comp) >= 2, "latency_us=100 adds ~3 ticks of advanc
 # ===========================================================================
 # Common register installation
 # ===========================================================================
-print("install_common_registers — TimestampSecond writability")
-
+print("Testing: Common register installation")
 from microharp.registers import (
     RegisterBank,
     install_common_registers,
@@ -375,8 +365,7 @@ check(stored == 7777, "register storage reflects written value")
 # ===========================================================================
 # OperationControl
 # ===========================================================================
-print("OperationControl — defaults and bit semantics")
-
+print("Testing: OperationControl")
 op = bank.get(R_OPERATION_CONTROL)
 check(op is not None, "R_OPERATION_CONTROL exists")
 assert op is not None
@@ -412,8 +401,7 @@ check(bool(op.storage[0] & OP_HEARTBEAT_EN), "after write: HEARTBEAT_EN bit set"
 # ===========================================================================
 # OperationControl — DUMP behaviour (via dispatcher)
 # ===========================================================================
-print("OperationControl — DUMP behaviour (via dispatcher)")
-
+print("Testing: OperationControl DUMP behaviour")
 from microharp.dispatch import Dispatcher
 
 clk2 = Clock()
@@ -466,8 +454,7 @@ check(not (op2.storage[0] & OP_DUMP), "DUMP bit auto-clears after the dump")
 # ===========================================================================
 # Dispatcher — MUTE_REPLIES suppresses ALL replies
 # ===========================================================================
-print("Dispatcher — MUTE_REPLIES suppresses ALL replies (WRITE, READ, errors)")
-
+print("Testing: Dispatcher MUTE_REPLIES")
 from microharp.registers import RegisterEntry
 
 clk3 = Clock()
@@ -568,8 +555,7 @@ while tx_q3.qsize():
 # ===========================================================================
 # EventSource — Standby suppresses event emission
 # ===========================================================================
-print("EventSource — Standby suppresses event emission")
-
+print("Testing: EventSource")
 from microharp.events import EventSource
 
 # Active mode → events go through.
