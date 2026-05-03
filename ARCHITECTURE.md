@@ -106,11 +106,9 @@ blink is the explicit "unsynced" tell. Gated by `VISUAL_EN` and
 
 ## Heartbeat
 
-Publishes an `R_HEARTBEAT` (U16) EVENT at 1 Hz when
+Publishes an `R_TIMESTAMP_SECOND` (U32) EVENT at 1 Hz when
 `OperationControl.HEARTBEAT_EN` (bit 2) is set and the device is in
-Active mode. The U16 payload reports `IS_ACTIVE` (bit 0) and
-`IS_SYNCHRONIZED` (bit 1). `ALIVE_EN` (bit 7, deprecated) selects
-`R_TIMESTAMP_SECOND` instead — `HEARTBEAT_EN` takes precedence per spec.
+Active mode. `ALIVE_EN` (bit 7, deprecated) uses the same event type.
 
 ## Operation mode gating
 

@@ -5,10 +5,10 @@ Self-contained — only requires `pyserial`.
 
 Run on Windows:
     pip install pyserial
-    python tests/benchmark.py --port COM8
+    python test/benchmark.py --port COM8
 
 Run on Linux/macOS:
-    python3 tests/benchmark.py --port /dev/ttyACM0
+    python3 test/benchmark.py --port /dev/ttyACM0
 
 What it does, in order:
     1.  Open the port and clear any pending bytes.
@@ -238,17 +238,83 @@ def request_reply(
 # ---------------------------------------------------------------------------
 
 
+_OP_MODE_NAMES = {0x00: "STANDBY", 0x01: "ACTIVE", 0x02: "RESERVED", 0x03: "RESERVED"}
+_OP_FLAGS = [
+    (0x04, "HEARTBEAT_EN"),
+    (0x08, "DUMP"),
+    (0x10, "MUTE_REPLIES"),
+    (0x20, "VISUAL_EN"),
+    (0x40, "OPLED_EN"),
+    (0x80, "ALIVE_EN"),
+]
+
+
+def _fmt_op_control(val):
+    mode = _OP_MODE_NAMES.get(val & 0x03, "?")
+    parts = ["STANDBY=%s" % (mode == "STANDBY"), "ACTIVE=%s" % (mode == "ACTIVE")]
+    parts += ["%s=%s" % (name, bool(val & mask)) for mask, name in _OP_FLAGS]
+    return ", ".join(parts)
+
+
+def _fmt_version_array(payload):
+    """R_VERSION (U8[32]): PROTOCOL/FIRMWARE/HARDWARE each 3 bytes (maj,min,patch),
+    then CORE_ID 3 ASCII chars, then INTERFACE_HASH 20 bytes SHA-1 LE."""
+    if len(payload) < 12:
+        return payload.hex(" ")
+    proto  = "%d.%d.%d" % (payload[0], payload[1], payload[2])
+    fw     = "%d.%d.%d" % (payload[3], payload[4], payload[5])
+    hw     = "%d.%d.%d" % (payload[6], payload[7], payload[8])
+    try:
+        core_id = bytes(payload[9:12]).decode("ascii").rstrip("\x00")
+    except Exception:
+        core_id = payload[9:12].hex()
+    parts = ["PROTOCOL=%s" % proto, "FIRMWARE=%s" % fw,
+             "HARDWARE=%s" % hw, "CORE_ID=%s" % core_id]
+    if len(payload) >= 32:
+        ih = bytes(payload[12:32])
+        if any(ih):
+            parts.append("INTERFACE_HASH=%s" % ih.hex())
+    return "  ".join(parts)
+
+
+def _fmt_heartbeat(val):
+    """R_HEARTBEAT (U16): IS_ACTIVE [bit 0], IS_SYNCHRONIZED [bit 1]."""
+    return "IS_ACTIVE=%s  IS_SYNCHRONIZED=%s" % (
+        bool(val & 0x01), bool(val & 0x02)
+    )
+
+
 def fmt_payload(addr, payload):
     info = EXPECTED.get(addr)
     if info is None:
         return repr(payload)
     pt, name, fmt = info
+
+    # Register-specific decoders.
+    if addr == R_OPERATION_CONTROL and payload:
+        return _fmt_op_control(payload[0])
+    if addr == R_VERSION:
+        return _fmt_version_array(payload)
+    if addr == R_TIMESTAMP_SECOND and fmt:
+        val = struct.unpack(fmt, payload)[0]
+        return "%d s" % val
+    if addr == R_TIMESTAMP_MICRO and fmt:
+        val = struct.unpack(fmt, payload)[0]
+        return "%d µs" % (val * 32)
+    if addr == R_HEARTBEAT and fmt:
+        val = struct.unpack(fmt, payload)[0]
+        return _fmt_heartbeat(val)
+    if addr in (R_HW_VERSION_H, R_HW_VERSION_L, R_FW_VERSION_H, R_FW_VERSION_L,
+                R_HARP_VERSION_H, R_HARP_VERSION_L, R_ASSEMBLY_VERSION) and fmt:
+        return str(struct.unpack(fmt, payload)[0])
+
     if fmt is None:
-        # Array payload — show as ascii if printable, else hex.
+        # Array payload — show as ASCII if printable, else hex.
         if all(32 <= b < 127 or b == 0 for b in payload):
             s = payload.split(b"\x00", 1)[0].decode("ascii", "replace")
-            return "%r (%d bytes)" % (s, len(payload))
+            return "%r" % s
         return payload.hex(" ")
+
     elem_size = struct.calcsize(fmt)
     n = len(payload) // elem_size
     if n == 1:
@@ -257,9 +323,7 @@ def fmt_payload(addr, payload):
 
 
 def banner(s):
-    print("\n" + "=" * 60)
-    print("  " + s)
-    print("=" * 60)
+    print("\n" + s)
 
 
 # ---------------------------------------------------------------------------
@@ -268,62 +332,112 @@ def banner(s):
 
 
 def section_reset_clock(ser):
-    """Force the device's TimestampSecond back to 0 at the start of the
-    session.  Otherwise repeated test runs leave the clock at increasingly
-    large values that look like the device has been booted for hours."""
-    banner("0. Reset device clock to 0")
     rep, rtt = request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
-    if rep is None:
-        print("  TIMEOUT — device not responding")
+    if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
         return False
-    assert rtt is not None
-    if rep["msg_type"] & MSG_FLAG_ERROR:
-        print(f"  ERROR (msg_type=0x{rep['msg_type']:02X}) — TimestampSecond may be locked")
-        return False
-    rep, _ = request_reply(ser, MSG_READ, R_TIMESTAMP_SECOND)
-    if rep:
-        got = struct.unpack("<I", rep["payload"])[0]
-        print(f"  TimestampSecond: 0 → {got}  (rtt={rtt*1000:.2f} ms)")
     return True
 
 
+# Deprecated registers — still read for dump compliance but not shown in table.
+DEPRECATED = {
+    R_HW_VERSION_H, R_HW_VERSION_L, R_ASSEMBLY_VERSION,
+    R_HARP_VERSION_H, R_HARP_VERSION_L,
+    R_FW_VERSION_H, R_FW_VERSION_L,
+    R_SERIAL_NUMBER, R_TIMESTAMP_OFFSET,
+}
+
+
+def _expand_heartbeat(val):
+    return [("  IS_ACTIVE", str(bool(val & 0x01))), ("  IS_SYNCHRONIZED", str(bool(val & 0x02)))]
+
+
+def _expand_version(payload):
+    if len(payload) < 12:
+        return [("  (raw)", payload.hex(" "))]
+    rows = [
+        ("  PROTOCOL", "%d.%d.%d" % (payload[0], payload[1], payload[2])),
+        ("  FIRMWARE",  "%d.%d.%d" % (payload[3], payload[4], payload[5])),
+        ("  HARDWARE",  "%d.%d.%d" % (payload[6], payload[7], payload[8])),
+    ]
+    try:
+        core_id = bytes(payload[9:12]).decode("ascii").rstrip("\x00")
+    except Exception:
+        core_id = payload[9:12].hex()
+    rows.append(("  CORE_ID", core_id))
+    if len(payload) >= 32:
+        ih = bytes(payload[12:32])
+        if any(ih):
+            rows.append(("  INTERFACE_HASH", ih.hex()))
+    return rows
+
+
+def _expand_op_control(val):
+    mode = _OP_MODE_NAMES.get(val & 0x03, "?")
+    rows = [("  STANDBY", str(mode == "STANDBY")), ("  ACTIVE", str(mode == "ACTIVE"))]
+    rows += [("  " + name, str(bool(val & mask))) for mask, name in _OP_FLAGS]
+    return rows
+
+
 def section_read_common(ser):
-    banner("1. READ each common register")
-    print("  cols: address  name  ts=(secs,ticks)  payload  [pc_rtt]")
+    # (name, value, sub_rows) — sub_rows replaces the value cell when non-empty
+    entries: list[tuple[str, str, list[tuple[str, str]]]] = []
+    rtts = []
+
     for addr in sorted(EXPECTED):
+        if addr in DEPRECATED:
+            continue
         info = EXPECTED[addr]
         rep, rtt = request_reply(ser, MSG_READ, addr)
-        if rep is None:
-            print(f"  addr 0x{addr:02X} {info[1]:<18s} TIMEOUT")
+        if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
             continue
         assert rtt is not None
-        if rep["msg_type"] & MSG_FLAG_ERROR:
-            print(f"  addr 0x{addr:02X} {info[1]:<18s} ERROR (msg_type=0x{rep['msg_type']:02X})")
-            continue
-        print(
-            f"  addr 0x{addr:02X} {info[1]:<18s} ts=({rep['secs']},{rep['ticks']:5d})  "
-            f"{fmt_payload(addr, rep['payload'])}    "
-            f"[rtt={rtt*1000:6.2f} ms]"
-        )
+        rtts.append(rtt)
+        payload = rep["payload"]
+        if addr == R_OPERATION_CONTROL and payload:
+            entries.append(("OperationControl", "", _expand_op_control(payload[0])))
+        elif addr == R_HEARTBEAT and payload:
+            val = struct.unpack("<H", payload)[0]
+            entries.append(("Heartbeat", "", _expand_heartbeat(val)))
+        elif addr == R_VERSION:
+            entries.append(("Version", "", _expand_version(payload)))
+        else:
+            entries.append((info[1], fmt_payload(addr, payload), []))
+
+    # Put DeviceName first.
+    _ORDER = {"DeviceName": 0, "WhoAmI": 1}
+    entries.sort(key=lambda e: (_ORDER.get(e[0], 2), e[0]))
+
+    # Column width = widest top-level name OR widest sub-item name.
+    all_names = [n for n, _, _ in entries] + [
+        sub_n for _, _, subs in entries for sub_n, _ in subs
+    ]
+    col = max(len(n) for n in all_names) + 2
+
+    banner("Registers")
+    print(f"  {'Register':<{col}}  Value")
+    print(f"  {'-'*col}  {'-'*40}")
+    for name, val, subs in entries:
+        if subs:
+            print(f"  {name:<{col}}")
+            for sub_n, sub_v in subs:
+                print(f"  {sub_n:<{col}}  {sub_v}")
+        else:
+            print(f"  {name:<{col}}  {val}")
+    print(f"\n  avg RTT: {_avg_ms(rtts):.2f} ms")
 
 
 def section_dump(ser):
-    banner("2. DUMP — write OperationControl with DUMP bit, expect N replies")
-    # Read current OperationControl first.
     rep, _ = request_reply(ser, MSG_READ, R_OPERATION_CONTROL)
     if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
-        print("  could not read OperationControl; skipping dump test")
         return
     cur = rep["payload"][0]
     new_val = cur | OP_DUMP
-    # Send the WRITE manually because we expect MULTIPLE replies.
     ser.reset_input_buffer()
     t0 = time.perf_counter()
     ser.write(encode(MSG_WRITE, R_OPERATION_CONTROL, 255, PT_U8, bytes([new_val])))
     ser.flush()
     seen = []
     deadline = time.time() + 3.0
-    # Skip bad/event frames while waiting for dump replies.
     while time.time() < deadline:
         f = read_one_frame(ser, deadline)
         if f is None:
@@ -331,87 +445,32 @@ def section_dump(ser):
         if f["msg_type"] == MSG_EVENT:
             continue
         seen.append(f)
-        # Heuristic: stop when we've gotten the WRITE reply and at least
-        # 18 READ replies (the common-register count) and the queue is idle
-        # for 100 ms.
         if len(seen) >= 1 + len(EXPECTED):
             time.sleep(0.05)
             if ser.in_waiting == 0:
                 break
     elapsed = time.perf_counter() - t0
-    write_replies = sum(1 for f in seen if f["msg_type"] == MSG_WRITE)
-    read_replies = sum(1 for f in seen if f["msg_type"] == MSG_READ)
-    print(f"  total replies: {len(seen)}  ({write_replies} WRITE, {read_replies} READ)  " f"[{elapsed*1000:.1f} ms]")
-    addrs = sorted({f["address"] for f in seen if f["msg_type"] == MSG_READ})
-    expected_addrs = sorted(EXPECTED.keys())
-    missing = [a for a in expected_addrs if a not in addrs]
-    extra = [a for a in addrs if a not in expected_addrs]
-    if missing:
-        print(f"  missing addresses: {[hex(a) for a in missing]}")
-    if extra:
-        print(f"  extra addresses (app registers?): {[hex(a) for a in extra]}")
-    if not missing and not extra:
-        print(f"  ✓ all {len(expected_addrs)} common registers came back")
-    # Verify DUMP bit auto-cleared.
-    rep, _ = request_reply(ser, MSG_READ, R_OPERATION_CONTROL)
-    if rep and not (rep["payload"][0] & OP_DUMP):
-        print("  ✓ DUMP bit auto-cleared after dump")
-    else:
-        print("  ✗ DUMP bit did NOT auto-clear")
+    print(f"\nDump: {len(seen)} replies  [{(elapsed/len(seen)*1000):.1f} ms]")
 
 
-def _stats_us(label, xs):
-    """Percentile table for a list of microsecond values."""
-    if not xs:
-        print(f"  {label:<32s} no samples")
-        return
-    xs_s = sorted(xs)
-    m = len(xs_s)
-    mean = sum(xs_s) / m
-    print(
-        f"  {label:<32s} n={m:4d}  mean={mean:8.1f}  "
-        f"p50={xs_s[m//2]:8.1f}  p95={xs_s[int(m*0.95)]:8.1f}  "
-        f"p99={xs_s[int(m*0.99)]:8.1f}  max={xs_s[-1]:8.1f}  (µs)"
-    )
+def _avg_us(xs):
+    return sum(xs) / len(xs) if xs else float("nan")
 
 
-def _stats_ms(label, xs):
-    """Percentile table for a list of second values, displayed as ms."""
-    if not xs:
-        print(f"  {label:<32s} no samples")
-        return
-    xs_s = sorted(xs)
-    m = len(xs_s)
-    mean = sum(xs_s) / m
-    print(
-        f"  {label:<32s} n={m:4d}  mean={mean*1000:7.2f}  "
-        f"p50={xs_s[m//2]*1000:7.2f}  p95={xs_s[int(m*0.95)]*1000:7.2f}  "
-        f"p99={xs_s[int(m*0.99)]*1000:7.2f}  max={xs_s[-1]*1000:7.2f}  (ms)"
-    )
+def _avg_ms(xs):
+    return sum(xs) / len(xs) * 1000 if xs else float("nan")
 
 
 def section_clock_read_benchmark(ser, n=200):
-    """Benchmark READ round-trip latency using the device's own clock.
-
-    Latency is computed as the difference between consecutive device
-    timestamps (harp_us(reply[i+1]) - harp_us(reply[i])).  This measures
-    exactly the time the device observed between finishing request i and
-    finishing request i+1 — no PC clock involved, no USB-jitter inflation.
-    """
-    banner(f"3. Clock READ benchmark ({n} round trips)")
-    print("  Latency = consecutive device-timestamp deltas (µs).")
-    print("  PC round-trip shown separately for reference.")
-    print()
-
-    # Send n+1 requests so we get n inter-reply intervals.
-    device_rtts = []  # harp_us[i+1] - harp_us[i]
-    pc_rtts = []  # PC-side wall-clock RTT (reference only)
+    """"""
+    device_rtts = []
+    pc_rtts = []
     prev_us = None
 
     for _ in range(n + 1):
         rep, rtt = request_reply(ser, MSG_READ, R_TIMESTAMP_SECOND)
         if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
-            prev_us = None  # gap — don't diff across it
+            prev_us = None
             continue
         cur_us = harp_us(rep)
         pc_rtts.append(rtt)
@@ -419,30 +478,13 @@ def section_clock_read_benchmark(ser, n=200):
             device_rtts.append(cur_us - prev_us)
         prev_us = cur_us
 
-    print("  -- device-clock inter-reply interval --")
-    _stats_us("R_TIMESTAMP_SECOND", device_rtts)
-    print("  -- PC round-trip (reference only) --")
-    _stats_ms("R_TIMESTAMP_SECOND", pc_rtts)
+    banner(f"Read latency ({n} round trips)")
+    print(f"  device avg: {_avg_us(device_rtts):.1f} µs")
+    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs")
 
 
 def section_clock_write_benchmark(ser, n=50):
-    """Benchmark WRITE round-trip latency using the device's own clock.
-
-    R_CLOCK_CONFIG is used (not R_TIMESTAMP_SECOND) because writing
-    TimestampSecond re-anchors the device clock, which would corrupt
-    inter-reply deltas with discontinuous jumps.  R_CLOCK_CONFIG is a
-    plain R/W U8 with no on_write side-effects — the dispatcher copies
-    the byte into storage and replies immediately, keeping the clock
-    free-running so deltas remain meaningful.
-
-    Latency = harp_us(reply[i+1]) - harp_us(reply[i]), same principle
-    as the READ benchmark — no PC clock involved.
-    """
-    banner(f"4. WRITE round-trip benchmark ({n} round trips, R_CLOCK_CONFIG)")
-    print("  Latency = consecutive device-timestamp deltas (µs).")
-    print("  PC round-trip shown separately for reference.")
-    print()
-
+    """"""
     payload = bytes([0])
     device_rtts = []
     pc_rtts = []
@@ -459,56 +501,58 @@ def section_clock_write_benchmark(ser, n=50):
             device_rtts.append(cur_us - prev_us)
         prev_us = cur_us
 
-    print("  -- device-clock inter-reply interval --")
-    _stats_us("R_CLOCK_CONFIG WRITE", device_rtts)
-    print("  -- PC round-trip (reference only) --")
-    _stats_ms("R_CLOCK_CONFIG WRITE", pc_rtts)
+    banner(f"Write latency ({n} round trips)")
+    print(f"  device avg: {_avg_us(device_rtts):.1f} µs")
+    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs")
 
 
 def section_active_listen(ser, seconds=5.0):
-    banner(f"5. Active mode — listen for events / heartbeat ({seconds:.0f} s)")
-    # Re-zero the clock so heartbeat timestamps in this section read out
-    # as a small, easy-to-eyeball number.  Skipped silently if the device
-    # rejects the write (e.g. CLK_LOCK is engaged).
-    request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
-    # Set OP_MODE = ACTIVE, keep VISUAL/HEARTBEAT enabled.
+    banner(f"Active listen ({seconds:.0f} s)")
     new_op = OP_ACTIVE | OP_HEARTBEAT_EN | OP_VISUAL_EN | OP_OPLED_EN | OP_ALIVE_EN
     rep, _ = request_reply(ser, MSG_WRITE, R_OPERATION_CONTROL, bytes([new_op]), PT_U8)
     if rep is None:
-        print("  could not enter Active mode; skipping")
         return
     counts = {}
     deadline = time.time() + seconds
+
+    def _event_name(addr):
+        if addr == R_TIMESTAMP_SECOND:
+            return "Heartbeat"
+        info = EXPECTED.get(addr)
+        return info[1] if info is not None else f"Reg 0x{addr:02X}"
+
+    def _event_payload_text(addr, payload):
+        info = EXPECTED.get(addr)
+        if info is not None:
+            return fmt_payload(addr, payload)
+        return payload.hex(" ")
+
     while time.time() < deadline:
         f = read_one_frame(ser, deadline)
-        if f is None or f["msg_type"] == MSG_EVENT:
+        if f is None or f["msg_type"] != MSG_EVENT:
             continue
         a: int = f["address"]
         counts[a] = counts.get(a, 0) + 1
-        if counts[a] <= 10:  # show first 10 of each
+        if counts[a] <= 10:
             payload_bytes: bytes = f["payload"]
-            print(
-                f"  EVT addr=0x{a:02X} ({EXPECTED.get(a, (None, '?', None))[1]:>16s}) "
-                f"ts=({f['secs']:>5d},{f['ticks']:>5d}) payload={payload_bytes.hex(' ')}"
-            )
-    print("  totals: " + ", ".join(f"0x{a:02X}={n}" for a, n in sorted(counts.items())))
+            name = _event_name(a)
+            payload_text = _event_payload_text(a, payload_bytes)
+            if payload_text:
+                print(f"  {name:<18s} ts=({f['secs']},{f['ticks']:5d}) {payload_text}")
+            else:
+                print(f"  {name:<18s} ts=({f['secs']},{f['ticks']:5d})")
+
+    print("  totals: " + ", ".join(f"{_event_name(a)}={n}" for a, n in sorted(counts.items())))
 
 
 def section_restore_standby(ser):
-    banner("6. Restoring Standby + reset clock to 0 + clearing reply-mute")
     rep, _ = request_reply(ser, MSG_READ, R_OPERATION_CONTROL)
     if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
         return
     cur = rep["payload"][0]
-    new = cur & ~(OP_OP_MODE_MASK | OP_MUTE_REPLIES)  # OP_MODE = STANDBY
-    rep, _ = request_reply(ser, MSG_WRITE, R_OPERATION_CONTROL, bytes([new]), PT_U8)
-    if rep:
-        print(f"  OperationControl: 0x{cur:02X} → 0x{rep['payload'][0]:02X}")
-    # Leave the clock at zero so the next session starts from a known
-    # baseline (and so a stale large value isn't confused with sync drift).
-    rep, _ = request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
-    if rep and not (rep["msg_type"] & MSG_FLAG_ERROR):
-        print("  TimestampSecond reset to 0")
+    new = cur & ~(OP_OP_MODE_MASK | OP_MUTE_REPLIES)
+    request_reply(ser, MSG_WRITE, R_OPERATION_CONTROL, bytes([new]), PT_U8)
+    request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +582,6 @@ def main():
     p.add_argument("--skip-active", action="store_true", help="Don't enter Active mode (for read-only testing)")
     args = p.parse_args()
 
-    print(f"opening {args.port} @ {args.baud} baud …")
     with open_port(args.port, args.baud) as ser:
         try:
             # section_reset_clock(ser)

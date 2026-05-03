@@ -37,7 +37,7 @@ import time
 
 try:
     from asyncio import Queue  # available on CPython and MicroPython ≥1.20 with full asyncio
-except ImportError:
+except (ImportError, AttributeError):
     from .queue import Queue  # fallback for bare RP2 / stripped MicroPython builds
 
 from .clock import Clock, sync_task, second_ticker

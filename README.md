@@ -25,14 +25,21 @@ declared in `package.json` and pulled in automatically:
 mpremote mip install github:DCisHurt/micropython-microharp
 ```
 
-For an offline / development install, copy the package directory to the
-board and one of the examples as `main.py`:
+For a local development install, copy the package directory to the
+board and one of the examples as `main.py`.
+
+Note: `mpremote cp` does not resolve `package.json` dependencies, so
+install `usb-device-cdc` explicitly first:
 
 ```bash
+mpremote mip install usb-device-cdc
 mpremote cp -r microharp/ :
 mpremote cp example/example_basic_stdio.py :main.py
 mpremote reset
 ```
+
+For a fully offline install, vendor the dependency on-device first, then
+use the copy commands above.
 
 ## Quick start
 

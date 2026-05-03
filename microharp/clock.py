@@ -191,7 +191,7 @@ class Clock:
         # the Python-level cost here is the arithmetic and tuple return.
         # Replacing divmod with two ops avoids one bytecode and one
         # tuple-unpack on the hot fast-path branch.
-        delta_us = time.ticks_diff(_ticks_us(), self._epoch_us + 410)
+        delta_us = time.ticks_diff(_ticks_us(), self._epoch_us)
         if delta_us < 0:
             delta_us = 0
         if delta_us >= 1_000_000:

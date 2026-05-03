@@ -9,7 +9,7 @@ shims so the package imports cleanly under CPython.
 From the repo root:
 
 ```bash
-python tests/test.py
+python -B test/test.py
 ```
 
 The script exits non-zero on failure, so it is safe to run in CI.
@@ -45,19 +45,19 @@ The script exits non-zero on failure, so it is safe to run in CI.
 ## Adding a test
 
 The shim layer is at the top of
-[`tests/test.py`](tests/test.py). Copy the shim
+[`test/test.py`](test/test.py). Copy the shim
 block when adding tests for any module that touches `micropython.const`
 or hardware-only APIs. Keep the shims minimal; don't pull in the full
 `micropython-stubs` package.
 
 ## Benchmarking on a live device
 
-[`tests/benchmark.py`](tests/benchmark.py) connects over USB CDC or UART and
+[`test/benchmark.py`](test/benchmark.py) connects over USB CDC or UART and
 measures round-trip latency using the device's own clock (not the PC clock),
 so USB-driver scheduling jitter doesn't inflate the numbers.
 
 ```bash
 pip install pyserial
-python tests/benchmark.py --port COM8          # Windows
-python3 tests/benchmark.py --port /dev/ttyACM0 # Linux/macOS
+python test/benchmark.py --port COM8          # Windows
+python3 test/benchmark.py --port /dev/ttyACM0 # Linux/macOS
 ```
