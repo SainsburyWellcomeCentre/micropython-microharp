@@ -1,0 +1,19 @@
+{
+    "version": "0.1.0",
+    "deps": [
+        ["usb-device-cdc", ""]
+    ],
+    "urls": [
+        ["microharp/__init__.py",  "microharp/__init__.py"],
+        ["microharp/clock.py",     "microharp/clock.py"],
+        ["microharp/device.py",    "microharp/device.py"],
+        ["microharp/dispatch.py",  "microharp/dispatch.py"],
+        ["microharp/events.py",    "microharp/events.py"],
+        ["microharp/framing.py",   "microharp/framing.py"],
+        ["microharp/heartbeat.py", "microharp/heartbeat.py"],
+        ["microharp/led.py",       "microharp/led.py"],
+        ["microharp/queue.py",     "microharp/queue.py"],
+        ["microharp/registers.py", "microharp/registers.py"],
+        ["microharp/transport.py", "microharp/transport.py"]
+    ]
+}
