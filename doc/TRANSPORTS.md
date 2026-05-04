@@ -49,7 +49,7 @@ device = HarpDevice(transport=CdcTransport(cdc), ...)
 `OP_MODE` to STANDBY on DTR-high (the host has just opened the port), so
 the host never sees stale events from a previous session.
 
-See [`example/example_secondary_cdc.py`](example/example_secondary_cdc.py).
+See [`../example/example_secondary_cdc.py`](../example/example_secondary_cdc.py).
 
 ## UartTransport
 
@@ -66,7 +66,7 @@ device = HarpDevice(transport=UartTransport(data_uart), ...)
 
 Use `timeout=0` so reads are non-blocking — the StreamReader wraps it.
 
-See [`example/example_uart.py`](example/example_uart.py).
+See [`../example/example_uart.py`](../example/example_uart.py).
 
 ## StreamTransport — custom backends
 

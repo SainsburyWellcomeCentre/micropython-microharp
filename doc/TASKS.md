@@ -100,6 +100,101 @@ This:
 The timestamp is captured _inside the IRQ handler_, not at asyncio wake,
 so accuracy is bounded by IRQ entry latency (~single-digit µs on RP2040).
 
+### Running a task only while a pin is active
+
+`bind_pin_event` can take a `task=` coroutine factory. When the pin
+transitions to `active_level` (default 0, matches `Pin.PULL_UP`) the
+framework starts a new task from `task()`; on the opposite transition
+it cancels that task. No always-on controller task is added — the
+create/cancel are bounced out of hard IRQ via `micropython.schedule`,
+so `asyncio.create_task` / `Task.cancel` run in normal context one
+main-loop tick later.
+
+```python
+async def worker():
+    n = 0
+    try:
+        while True:
+            n += 1
+            print("tick", n)
+            await asyncio.sleep_ms(200)
+    except asyncio.CancelledError:
+        print("stopped at", n)
+        raise
+
+device.bind_pin_event(
+    button, address=32, payload_type=PT_U8,
+    trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
+    task=worker,
+)
+```
+
+The Harp EVENT is still emitted on every edge — the sequence runs
+alongside it. For lower-level use (your own flag, custom dispatch) the
+`on_irq(level)` hook is also available and runs in hard-IRQ context;
+pre-bind a `ThreadSafeFlag.set` and write your own task. See
+[`example/example_button_controller.py`](example/example_button_controller.py).
+
+### Multi-state sequence with timeouts and error EVENTs
+
+For more than two states, per-state timeouts, or driving the same
+sequence from several triggers (a pin AND a register write), use
+`add_task_sequence`:
+
+```python
+emit_error = device.bind_event_register(0x22, PT_U8, name="Error")
+
+async def on_timeout(name):
+    await emit_error(1 if name == "A" else 2)
+
+sequence = device.add_task_sequence(
+    states={
+        "A": (taskA,  5),       # cancel after 5 s, EVENT to 0x22
+        "B": (taskB, 10),
+    },
+    on_timeout=on_timeout,
+)
+
+# Trigger 1: pin level → state name.
+device.bind_pin_event(
+    button, address=0x20, payload_type=PT_U8,
+    trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
+    sequence=sequence, level_state={0: "A", 1: "B"},
+)
+
+# Trigger 2: register write → state name.
+device.bind_state_register(
+    address=0x21, payload_type=PT_U8,
+    sequence=sequence, mapping={1: "A", 0: "B"},
+)
+```
+
+Same-state calls dedupe — writing 0x21=1 while taskA is already running
+is a no-op. On timeout the framework awaits `on_timeout(name)` (typical
+use: emit an error EVENT) and resets the sequence to idle so the next
+trigger can start fresh. `bind_event_register` returns an
+`await emit(value)` closure that does not add an always-on drain task,
+so total task count stays at 0 idle and 1 active. See
+[`example/example_3state_timeout.py`](example/example_3state_timeout.py).
+
+**Mapping no-op semantics.** Keys absent from `level_state` /
+`mapping` are silently ignored — they don't trigger a transition. To
+explicitly cancel any current task and go to idle on a particular
+value, include it with state `None` (e.g. `mapping={1: "A", 0: None}`).
+
+**Guards.** `add_task_sequence(..., guards={"A": pred})` rejects a
+transition to `"A"` when `pred()` returns False. Useful for "only
+allow this state from idle" or "only chain from a specific running
+state" patterns.
+
+**Pin as pure trigger.** Pass `address=None` to `bind_pin_event` to
+skip Harp-event emission and the per-pin register entirely; the pin
+becomes a trigger only and you wire behaviour through `on_irq=`,
+`task=`, or `sequence=`. See
+[`example/example_motor_chain.py`](example/example_motor_chain.py)
+for a worked example combining `address=None`, `guards=`, and a
+sticky-error status register.
+
 ## Custom event sources for non-pin IRQs
 
 For timers, encoders, or sensor-ready lines, build an `EventSource`

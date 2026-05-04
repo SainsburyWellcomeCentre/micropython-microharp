@@ -68,19 +68,22 @@ async def writer(reg, payload_mv) -> int | None:
 
 ### Event helpers
 
-| Helper                                                                        | Purpose                                                           |
-| ----------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `add_event_source(addr, type, *, port, ring_size, pack)`                      | Returns an `EventSource`; emit IRQ-safe with `.emit(word)`.       |
-| `add_periodic_event(addr, type, period_ms, *, pack, port)`                    | Auto-emit a register's value every `period_ms` (drift-corrected). |
-| `bind_pin_event(pin, *, address, payload_type, trigger, hard, name, on_read)` | GPIO IRQ → ring → EVENT. Captures timestamp at IRQ.               |
-| `await emit(addr, payload, payload_type)`                                     | Push an ad-hoc EVENT (timestamp captured at call time).           |
+| Helper                                                       | Purpose                                                                               |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `add_event_source(addr, type, *, port, ring_size, pack)`     | Returns an `EventSource`; emit IRQ-safe with `.emit(word)`. Adds 1 always-on task.    |
+| `add_periodic_event(addr, type, period_ms, *, pack, port)`   | Auto-emit a register's value every `period_ms` (drift-corrected).                     |
+| `bind_pin_event(pin, *, address, payload_type, trigger, ...)`| GPIO IRQ → EVENT (ts at IRQ). `task=` / `sequence=` for press-driven task sequence.   |
+| `bind_event_register(addr, type, *, n_elements, name)`       | Create a R/O EVENT register; returns `await emit(value)` closure (no always-on task). |
+| `bind_state_register(addr, type, sequence, mapping, *, name)`| Create a R/W register whose written byte drives a `TaskSequence` via `mapping`.       |
+| `await emit(addr, payload, payload_type=None)`               | Push an ad-hoc EVENT. `payload` may be bytes-like, an int/float, or a list/tuple.     |
 
 ### Task helpers
 
-| Helper        | Purpose                                                   |
-| ------------- | --------------------------------------------------------- |
-| `@task`       | Register an extra coroutine for `asyncio.gather` set.     |
-| `await run()` | Launch every core task + your event sources + your tasks. |
+| Helper                                                     | Purpose                                                                                |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `@task`                                                    | Register an extra coroutine for `asyncio.gather` set.                                  |
+| `add_task_sequence(states, *, guards, on_timeout)`         | N-state mutually-exclusive task sequence with per-state `wait_for` timeouts and gates. |
+| `await run()`                                              | Launch every core task + your event sources + your tasks.                              |
 
 ### Clock access
 
