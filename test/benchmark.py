@@ -167,26 +167,28 @@ def decode_frame(buf: bytes) -> Optional[dict[str, Any]]:
 
 
 def read_one_frame(ser, deadline):
-    """Read until one complete framed message arrives or `deadline` is hit.
-    Returns the decoded dict, or None on timeout / framing error."""
+    """Block-read one complete framed message.  Returns dict or None on timeout.
+
+    Uses blocking `ser.read(N)` — pyserial waits on the OS handle (overlapped
+    I/O on Windows, select/epoll elsewhere) and wakes within tens of µs of
+    bytes appearing.  No `time.sleep` polling — that would quantize wake-up
+    to the Windows timer-tick (≥1 ms) and dominate the host-side jitter.
+    """
     buf = bytearray()
-    while time.time() < deadline:
-        b = ser.read(2 - len(buf)) if len(buf) < 2 else b""
-        if b:
-            buf.extend(b)
-            continue
-        if len(buf) < 2:
-            time.sleep(0.001)
-            continue
-        target = buf[1] + 2
-        # Read the rest.
-        while len(buf) < target and time.time() < deadline:
-            chunk = ser.read(target - len(buf))
-            if chunk:
-                buf.extend(chunk)
-        if len(buf) >= target:
-            return decode_frame(bytes(buf[:target]))
-    return None
+    while len(buf) < 2 and time.perf_counter() < deadline:
+        chunk = ser.read(2 - len(buf))
+        if chunk:
+            buf.extend(chunk)
+    if len(buf) < 2:
+        return None
+    target = buf[1] + 2
+    while len(buf) < target and time.perf_counter() < deadline:
+        chunk = ser.read(target - len(buf))
+        if chunk:
+            buf.extend(chunk)
+    if len(buf) < target:
+        return None
+    return decode_frame(bytes(buf[:target]))
 
 
 def harp_us(reply):
@@ -218,13 +220,16 @@ def request_reply(
     and is unaffected by PC-side USB scheduling jitter.
 
     Returns (None, None) on timeout.
+
+    Note: callers should `ser.reset_input_buffer()` once before a sequence of
+    requests if there is any chance of stale bytes in the OS buffer.  Doing
+    it here per-call is a `PurgeComm` syscall (~hundreds of µs) that
+    inflates host-side jitter unnecessarily for back-to-back benchmarks.
     """
-    ser.reset_input_buffer()
     t0 = time.perf_counter()
     ser.write(encode(msg_type, addr, 255, payload_type, payload))
-    ser.flush()
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
         f = read_one_frame(ser, deadline)
         if f is None:
             return None, None
@@ -382,6 +387,7 @@ def section_read_common(ser):
     # (name, value, sub_rows) — sub_rows replaces the value cell when non-empty
     entries: list[tuple[str, str, list[tuple[str, str]]]] = []
     rtts = []
+    ser.reset_input_buffer()
 
     for addr in sorted(EXPECTED):
         if addr in DEPRECATED:
@@ -427,6 +433,7 @@ def section_read_common(ser):
 
 
 def section_dump(ser):
+    ser.reset_input_buffer()
     rep, _ = request_reply(ser, MSG_READ, R_OPERATION_CONTROL)
     if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
         return
@@ -437,8 +444,8 @@ def section_dump(ser):
     ser.write(encode(MSG_WRITE, R_OPERATION_CONTROL, 255, PT_U8, bytes([new_val])))
     ser.flush()
     seen = []
-    deadline = time.time() + 3.0
-    while time.time() < deadline:
+    deadline = time.perf_counter() + 3.0
+    while time.perf_counter() < deadline:
         f = read_one_frame(ser, deadline)
         if f is None:
             break
@@ -450,7 +457,8 @@ def section_dump(ser):
             if ser.in_waiting == 0:
                 break
     elapsed = time.perf_counter() - t0
-    print(f"\nDump: {len(seen)} replies  [{(elapsed/len(seen)*1000):.1f} ms]")
+    print(f"\nDump: {len(seen)} replies")
+    # print(f"\nDump: {len(seen)} replies  [{(elapsed/len(seen)*1000):.1f} ms]")
 
 
 def _avg_us(xs):
@@ -461,17 +469,40 @@ def _avg_ms(xs):
     return sum(xs) / len(xs) * 1000 if xs else float("nan")
 
 
+def _std_us(xs):
+    if len(xs) < 2:
+        return float("nan")
+    avg = sum(xs) / len(xs)
+    return (sum((x - avg) ** 2 for x in xs) / (len(xs) - 1)) ** 0.5
+
+
+def _std_ms(xs):
+    return _std_us(xs) / 1000
+
+
 def section_clock_read_benchmark(ser, n=200):
-    """"""
+    """Tight inline send/receive loop.
+
+    The request frame is encoded once outside the loop, and the OS input
+    buffer is drained once before the loop — every per-iteration syscall
+    we save shows up directly in the host-side jitter.
+    """
+    request = encode(MSG_READ, R_TIMESTAMP_SECOND, 255, PT_U32)
     device_rtts = []
     pc_rtts = []
     prev_us = None
+    ser.reset_input_buffer()
+    perf = time.perf_counter
+    write = ser.write
 
     for _ in range(n + 1):
-        rep, rtt = request_reply(ser, MSG_READ, R_TIMESTAMP_SECOND)
-        if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
+        t0 = perf()
+        write(request)
+        rep = read_one_frame(ser, t0 + 1.0)
+        if rep is None or rep["msg_type"] & MSG_FLAG_ERROR or rep["address"] != R_TIMESTAMP_SECOND:
             prev_us = None
             continue
+        rtt = perf() - t0
         cur_us = harp_us(rep)
         pc_rtts.append(rtt)
         if prev_us is not None:
@@ -479,22 +510,28 @@ def section_clock_read_benchmark(ser, n=200):
         prev_us = cur_us
 
     banner(f"Read latency ({n} round trips)")
-    print(f"  device avg: {_avg_us(device_rtts):.1f} µs")
-    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs")
+    print(f"  device avg: {_avg_us(device_rtts):.1f} µs  jitter: {_std_us(device_rtts):.1f} µs")
+    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs  jitter: {_std_ms(pc_rtts)*1000:.1f} µs")
 
 
 def section_clock_write_benchmark(ser, n=50):
-    """"""
-    payload = bytes([0])
+    """Tight inline send/receive loop — see read benchmark for rationale."""
+    request = encode(MSG_WRITE, R_SERIAL_NUMBER, 255, PT_U16, bytes([0, 0]))
     device_rtts = []
     pc_rtts = []
     prev_us = None
+    ser.reset_input_buffer()
+    perf = time.perf_counter
+    write = ser.write
 
     for _ in range(n + 1):
-        rep, rtt = request_reply(ser, MSG_WRITE, R_CLOCK_CONFIG, payload, PT_U8)
-        if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
+        t0 = perf()
+        write(request)
+        rep = read_one_frame(ser, t0 + 1.0)
+        if rep is None or rep["address"] != R_SERIAL_NUMBER:
             prev_us = None
             continue
+        rtt = perf() - t0
         cur_us = harp_us(rep)
         pc_rtts.append(rtt)
         if prev_us is not None:
@@ -502,8 +539,8 @@ def section_clock_write_benchmark(ser, n=50):
         prev_us = cur_us
 
     banner(f"Write latency ({n} round trips)")
-    print(f"  device avg: {_avg_us(device_rtts):.1f} µs")
-    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs")
+    print(f"  device avg: {_avg_us(device_rtts):.1f} µs  jitter: {_std_us(device_rtts):.1f} µs")
+    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs  jitter: {_std_ms(pc_rtts)*1000:.1f} µs")
 
 
 def section_active_listen(ser, seconds=5.0):
@@ -513,7 +550,7 @@ def section_active_listen(ser, seconds=5.0):
     if rep is None:
         return
     counts = {}
-    deadline = time.time() + seconds
+    deadline = time.perf_counter() + seconds
 
     def _event_name(addr):
         if addr == R_TIMESTAMP_SECOND:
@@ -527,7 +564,7 @@ def section_active_listen(ser, seconds=5.0):
             return fmt_payload(addr, payload)
         return payload.hex(" ")
 
-    while time.time() < deadline:
+    while time.perf_counter() < deadline:
         f = read_one_frame(ser, deadline)
         if f is None or f["msg_type"] != MSG_EVENT:
             continue
@@ -562,7 +599,7 @@ def section_restore_standby(ser):
 
 @contextmanager
 def open_port(port, baud):
-    ser = serial.Serial(port, baudrate=baud, timeout=0.05, write_timeout=1.0, rtscts=False, dsrdtr=False)
+    ser = serial.Serial(port, baudrate=baud, timeout=0.005, write_timeout=1.0, rtscts=False, dsrdtr=False)
     # DTR high so the device's CDC line-state callback knows we're connected.
     ser.dtr = True
     time.sleep(0.1)
@@ -570,6 +607,26 @@ def open_port(port, baud):
         yield ser
     finally:
         ser.close()
+
+
+@contextmanager
+def _win_timer_resolution_1ms():
+    """Bump Windows timer resolution to 1 ms for the duration of the block.
+
+    No-op on non-Windows.  Default Windows timer tick is 15.625 ms, which
+    would quantize any latent `time.sleep()` calls.  Blocking I/O uses
+    overlapped I/O and is unaffected, but this is cheap insurance.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes
+    winmm = ctypes.WinDLL("winmm")
+    winmm.timeBeginPeriod(1)
+    try:
+        yield
+    finally:
+        winmm.timeEndPeriod(1)
 
 
 def main():
@@ -582,7 +639,7 @@ def main():
     p.add_argument("--skip-active", action="store_true", help="Don't enter Active mode (for read-only testing)")
     args = p.parse_args()
 
-    with open_port(args.port, args.baud) as ser:
+    with _win_timer_resolution_1ms(), open_port(args.port, args.baud) as ser:
         try:
             # section_reset_clock(ser)
             section_read_common(ser)
