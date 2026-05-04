@@ -22,16 +22,18 @@ import usb.device
 
 from microharp import HarpDevice, CdcTransport, PT_U8
 
-LED_PIN = 25
-INPUT_PIN = 14
+LED_PIN = 19
+INPUT_PIN = 29
 ADDR_DIGITAL_IN = 32
 
+Pin(20, Pin.OUT, value=0)
+Pin(21, Pin.OUT, value=0)
 cdc = CDCInterface(baudrate=1_000_000, timeout=0, txbuf=2048, rxbuf=512)
 usb.device.get().init(cdc, builtin_driver=True)
 
 device = HarpDevice(
     transport=CdcTransport(cdc),
-    sync_uart=UART(1, baudrate=100_000, bits=8, parity=None, stop=1, rx=Pin(5), timeout=0),
+    sync_uart=UART(1, baudrate=100_000, bits=8, parity=None, stop=1, rx=Pin(9), timeout=0),
     led_pin=Pin(LED_PIN, Pin.OUT),
     who_am_i=1234,
     fw_version=(1, 0),

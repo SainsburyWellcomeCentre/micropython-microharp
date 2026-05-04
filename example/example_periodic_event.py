@@ -18,7 +18,10 @@ Wiring:
 import asyncio
 from machine import Pin, UART, ADC
 
-from microharp import HarpDevice, StdioTransport, PT_U16, READ_ONLY, EVENT
+from usb.device.cdc import CDCInterface
+import usb.device
+
+from microharp import HarpDevice, CdcTransport, PT_U16, READ_ONLY, EVENT
 
 ADC_PIN = 26
 LED_PIN = 25
@@ -27,8 +30,11 @@ SAMPLE_PERIOD_MS = 100  # 10 Hz
 
 adc = ADC(Pin(ADC_PIN))
 
+cdc = CDCInterface(baudrate=1_000_000, timeout=0, txbuf=2048, rxbuf=512)
+usb.device.get().init(cdc, builtin_driver=True)
+
 device = HarpDevice(
-    transport=StdioTransport(),
+    transport=CdcTransport(cdc),
     sync_uart=UART(1, baudrate=100_000, bits=8, parity=None, stop=1, rx=Pin(5), timeout=0),
     led_pin=Pin(LED_PIN, Pin.OUT),
     who_am_i=1234,

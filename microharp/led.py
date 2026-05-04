@@ -64,15 +64,16 @@ async def led_task(pin: Pin, clock: Clock, bank: RegisterBank):
             if is_active():
                 # 2 Hz square wave.
                 pin.value(not (clock._seconds & 0x2))
-                # await asyncio.sleep_ms(2000)
             else:
                 pin.value(not (clock._seconds & 0x4))
-                # await asyncio.sleep_ms(4000)
         else:
             # Free-running blink — explicitly NOT clock-aligned, so the
             # visual cue for "unsynced" is unmistakable.
             state ^= 1
             pin.value(state)
-            await asyncio.sleep_ms(4000)
+            if is_active():
+                await asyncio.sleep_ms(2000)
+            else:
+                await asyncio.sleep_ms(4000)
             # If sync gets acquired during the sleep, fall through to the
             # synced branch on next iteration.

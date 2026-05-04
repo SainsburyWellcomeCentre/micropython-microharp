@@ -80,6 +80,35 @@ def payload_elem_size(payload_type: int) -> int:
     raise ValueError("bad payload type")
 
 
+# ---- Scalar / sequence packing ---------------------------------------------
+#
+# Helper for `device.emit(addr, value)` where `value` is a Python int / float
+# / sequence rather than a pre-built bytes-like.  Returns a fresh bytearray
+# sized to one element of `payload_type` (or N elements when `value` is a
+# sequence).  Allocations here are unavoidable for the convenience API; if
+# you need an alloc-free emit path, build the bytearray once and pass it.
+_PT_FMT = {
+    PT_U8:    "<B",
+    PT_S8:    "<b",
+    PT_U16:   "<H",
+    PT_S16:   "<h",
+    PT_U32:   "<I",
+    PT_S32:   "<i",
+    PT_U64:   "<Q",
+    PT_S64:   "<q",
+    PT_FLOAT: "<f",
+}
+
+
+def _pack_value(value, payload_type: int) -> bytes:
+    fmt = _PT_FMT.get(payload_type & 0xCF)  # mask off PT_HAS_TIMESTAMP
+    if fmt is None:
+        raise ValueError("bad payload type for packing: 0x%02x" % payload_type)
+    if isinstance(value, (list, tuple)):
+        return struct.pack("<" + fmt[1] * len(value), *value)
+    return struct.pack(fmt, value)
+
+
 # ---- Checksum (viper if available) -----------------------------------------
 #
 # Viper compiles to native machine code with C-style integer typing.  No

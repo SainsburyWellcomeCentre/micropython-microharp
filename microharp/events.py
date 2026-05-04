@@ -279,3 +279,99 @@ def _convert_to_harp_ts(clock: Clock, t_irq_us: int):
         rem = delta - extra * 1_000_000
         return (secs0 + extra) & 0xFFFFFFFF, rem >> 5  # // 32
     return secs0, delta >> 5
+
+
+# ---------------------------------------------------------------------------
+# TaskSequence: N-state mutually-exclusive task pair with optional timeouts
+# ---------------------------------------------------------------------------
+
+
+class TaskSequence:
+    """Multi-state task sequence: at most one task running at any moment.
+
+    Construct via `device.add_task_sequence(states={...})`.  Each value
+    in `states` is one of:
+      - None                       : passive state, no task
+      - factory                    : run factory() until next transition
+      - (factory, timeout_seconds) : factory wrapped in `asyncio.wait_for`
+
+    Call `sequence(state_name)` from any context — hard IRQ, asyncio
+    task, scheduled callback.  Internally bounces every transition
+    through `micropython.schedule` so `asyncio.create_task` /
+    `Task.cancel` only run in safe context.  No always-on framework
+    task is added.
+
+    Same-state calls dedupe (no-op).
+
+    `guards` is an optional `{state_name: predicate}` dict; transitions
+    to a guarded state are silently dropped when `predicate()` returns
+    False.  Useful for "only allow this state from idle" patterns.
+
+    On natural task completion (factory returned without raising) and
+    on timeout, `_cur_state` is reset to None so future
+    `sequence(name)` calls aren't wrongly deduped.  On timeout the
+    framework first awaits `on_timeout(name)` (which the user typically
+    uses to emit an error EVENT), then performs the reset.
+    """
+
+    __slots__ = ("_states", "_guards", "_on_timeout",
+                 "_cur_state", "_cur_task",
+                 "_schedule", "_apply_bound")
+
+    def __init__(self, states, *, guards=None, on_timeout=None):
+        norm = {}
+        for name, val in states.items():
+            if val is None:
+                norm[name] = (None, None)
+            elif callable(val):
+                norm[name] = (val, None)
+            else:
+                norm[name] = val            # (factory, timeout_seconds)
+        self._states     = norm
+        self._guards     = guards if guards is not None else {}
+        self._on_timeout = on_timeout
+        self._cur_state  = None
+        self._cur_task   = None
+        import micropython
+        self._schedule    = micropython.schedule
+        self._apply_bound = self._apply
+
+    def __call__(self, state_name):
+        # Hard-IRQ-safe: one schedule call, no allocs, no asyncio touch.
+        self._schedule(self._apply_bound, state_name)
+
+    def _apply(self, state_name):
+        g = self._guards.get(state_name)
+        if g is not None and not g():
+            return                          # gated — silently dropped
+        if self._cur_state == state_name:
+            return                          # dedupe same-state triggers
+        cur = self._cur_task
+        if cur is not None and not cur.done():
+            cur.cancel()
+        self._cur_state = state_name
+        self._cur_task  = None
+        cfg = self._states.get(state_name)
+        if cfg is None:
+            return                          # unknown / passive state
+        factory, timeout_s = cfg
+        if factory is None:
+            return
+        self._cur_task = asyncio.create_task(self._wrap(state_name, factory, timeout_s))
+
+    async def _wrap(self, name, factory, timeout_s):
+        try:
+            if timeout_s is None:
+                await factory()
+            else:
+                await asyncio.wait_for(factory(), timeout_s)
+        except asyncio.TimeoutError:
+            if self._on_timeout is not None:
+                await self._on_timeout(name)
+        except asyncio.CancelledError:
+            raise                           # _apply already cleaned up
+        # Natural completion or post-timeout cleanup: reset only if we're
+        # still the active state (a transition may have already moved on).
+        if self._cur_state == name:
+            self._cur_state = None
+            self._cur_task  = None

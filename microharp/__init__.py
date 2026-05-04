@@ -9,7 +9,7 @@ Layout
 ------
     microharp/clock.py       Clock + sync_task (UART RX of sync packets)
     microharp/framing.py     Encode / decode of the 8-bit binary protocol
-    microharp/transport.py   Stdio / Cdc / Uart / Stream transports + slab pool
+    microharp/transport.py   Cdc / Uart / Stream transports + slab pool
     microharp/registers.py   RegisterEntry, RegisterBank, common registers 0..19
     microharp/dispatch.py    Dispatcher routing parsed frames -> register handlers
     microharp/events.py      Event source helper (timestamp at IRQ, encode in task)
@@ -17,12 +17,11 @@ Layout
     microharp/led.py         Status LED task, clock-synchronized when locked
     microharp/device.py      HarpDevice top-level orchestrator
 
-Wiring (defaults assumed by example/example_basic_stdio.py)
+Wiring (defaults assumed by example/example_secondary_cdc.py)
 ------------------------------------------------------------
     Sync UART : RX-only, 100 000 baud, 8N1.  RP2040 default = UART(1) RX=GP5.
-    USB CDC   : sys.stdin.buffer / sys.stdout.buffer.  Disable the REPL on
-                this CDC interface, or expose a *secondary* CDC interface
-                via example/example_secondary_cdc.py.
+    USB CDC   : Secondary CDC interface via usb.device.cdc.CDCInterface().
+                REPL stays on /dev/ttyACM0; Harp runs on /dev/ttyACM1.
     LED       : GP25 onboard (Pico).
     Input pin : GP14 with internal pull-up, IRQ on both edges.
 
@@ -43,7 +42,7 @@ Running on the device
     After `mip install`, copy one of example/example_*.py to :main.py and
     reboot.  Or, for an offline install:
         mpremote cp -r microharp/ :
-        mpremote cp example/example_basic_stdio.py :main.py
+        mpremote cp example/example_secondary_cdc.py :main.py
 
 Running the framing self-test on a desktop
 ------------------------------------------
@@ -71,11 +70,9 @@ from .framing import (
 from .clock import Clock
 from .registers import RegisterEntry, RegisterBank, READ_ONLY, WRITE_ONLY, READ_WRITE, EVENT
 from .transport import (
-    StdioTransport,
     CdcTransport,
     UartTransport,
     StreamTransport,
-    UsbTransport,  # back-compat alias of StdioTransport
     SlabPool,
     usb_rx_task,
     usb_tx_task,

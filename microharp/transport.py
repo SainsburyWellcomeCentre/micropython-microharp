@@ -2,12 +2,10 @@
 
 Three transport options, all duck-typed (`read_some(buf)` and `write(mv)`):
 
-    StdioTransport   — wraps sys.stdin.buffer / sys.stdout.buffer.
-                       Easiest, but conflicts with the REPL on the same CDC.
-
     CdcTransport     — wraps a custom CDC interface object (e.g.
                        `usb.device.cdc.CDCInterface()` on RP2 / MP 1.23+).
                        Run REPL on the default CDC and Harp on the second.
+                       Recommended for all USB-CDC deployments.
 
     UartTransport    — wraps `machine.UART`.  Use when USB is unavailable
                        or when the host connects via FTDI/USB-UART bridge.
@@ -24,7 +22,6 @@ through the asyncio queues — the bytearray itself is never copied.
 
 from micropython import const
 import asyncio
-import sys
 
 from .framing import FrameDecoder
 from .queue import Queue
@@ -150,58 +147,6 @@ class StreamTransport:
                 await asyncio.sleep_ms(0)
 
 
-class StdioTransport(StreamTransport):
-    """Wraps `sys.stdin.buffer` / `sys.stdout.buffer` (default REPL CDC).
-
-    Stdin and stdout are different objects, so we wrap each in its own
-    StreamReader/StreamWriter — both go through the same poll-based wake
-    machinery as StreamTransport.  Easiest to set up, but Harp framing
-    collides with the REPL on the same interface; use `CdcTransport` for
-    production.
-    """
-
-    __slots__ = ("_in", "_out", "_in_reader", "_out_writer")
-
-    def __init__(self):
-        # Bypass StreamTransport.__init__ — different stream objects in/out.
-        self._s = None
-        self._reader = None
-        self._writer = None
-        self._in = sys.stdin.buffer if hasattr(sys.stdin, "buffer") else sys.stdin
-        self._out = sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout
-        try:
-            self._in_reader = asyncio.StreamReader(self._in)
-            self._out_writer = asyncio.StreamWriter(self._out, {})
-        except (TypeError, AttributeError):
-            self._in_reader = None
-            self._out_writer = None
-
-    async def read_some(self, buf):
-        if self._in_reader is not None:
-            return await self._in_reader.readinto(buf)
-        while True:
-            n = self._in.readinto(buf)
-            if n:
-                return n
-            await asyncio.sleep_ms(0)
-
-    async def write(self, mv):
-        if self._out_writer is not None:
-            self._out_writer.write(mv)
-            await self._out_writer.drain()
-            return
-        n = 0
-        total = len(mv)
-        while n < total:
-            written = self._out.write(mv[n:])
-            if written is None:
-                await asyncio.sleep_ms(0)
-                continue
-            n += written
-            if n < total:
-                await asyncio.sleep_ms(0)
-
-
 # Naming aliases — same behaviour, different intent at the call site.
 class UartTransport(StreamTransport):
     """Harp over a `machine.UART` — set baud high enough for your traffic
@@ -227,9 +172,6 @@ class CdcTransport(StreamTransport):
 
     pass
 
-
-# Back-compat alias for the previous public name.
-UsbTransport = StdioTransport
 
 
 # ---------------------------------------------------------------------------
