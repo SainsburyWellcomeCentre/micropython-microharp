@@ -15,11 +15,13 @@ Reply rules (Device.md §Request-Reply):
     auto-clears DUMP.
 
 Timestamping:
-    Device.md §Request-Reply requires every reply to carry the Harp clock
-    time at which the request was processed.  We capture (secs, ticks)
-    once at the top of `_handle_one` — before any handler await, before
-    `slabs.lease()` (which may block under load), before `tx_q.put()`.
-    The captured pair is threaded through every reply path.
+    READ reply  : timestamp captured before `on_read` runs — the spec
+                  requires the time at which the request was processed
+                  (i.e. received and dispatched).
+    WRITE reply : timestamp re-captured *after* `on_write` completes —
+                  the reply must carry the time at which the write
+                  operation finished, not when the request arrived.
+    ERROR reply : timestamp from request-arrival time (pre-handler).
 """
 
 from .framing import (
@@ -134,70 +136,56 @@ class Dispatcher:
         # Strip error-bit if a host echo'd one back.
         op = msg_type & 0x07
 
-        # ── Capture the reply timestamp HERE, at request-processing time.
-        # Per spec: every reply must carry the Harp clock time at which
-        # the request was processed.  Anything that awaits below this
-        # line (handler IO, slabs.lease(), tx_q.put()) must NOT shift the
-        # timestamp forward.
-        secs, ticks = self.clock.now()
-
-        muted = self._replies_muted()
-
         reg = self.bank.get(address)
-        if reg is None:
-            if not muted:
-                await self._send_error(op, address, port, secs, ticks)
-            return
 
         if op == MSG_READ:
-            # READ_ONLY constant (0x01) is also the readable-bit mask.
-            if not (reg.access & READ_ONLY):
-                if not muted:
+            # Validate — then run the handler immediately, before any reply
+            # preparation (muted check, timestamp, slab lease, encode).
+            if reg is None or not (reg.access & READ_ONLY):
+                secs, ticks = self.clock.now()
+                if not self._replies_muted():
                     await self._send_error(op, address, port, secs, ticks)
                 return
             if reg.on_read is not None:
                 await reg.on_read(reg)
-            if not muted:
+            # Timestamp after handler — reflects when the value was sampled.
+            secs, ticks = self.clock.now()
+            if not self._replies_muted():
                 await self._send_reg_reply(MSG_READ, reg, port, secs, ticks)
 
         elif op == MSG_WRITE:
-            # WRITE_ONLY constant (0x02) is also the writable-bit mask.
-            if not (reg.access & WRITE_ONLY):
-                if not muted:
-                    await self._send_error(op, address, port, secs, ticks)
-                return
-
-            # Validate payload length against register storage.
             payload_mv = mv[po : po + pl]
-            if len(payload_mv) != len(reg.storage):
-                if not muted:
+            # Validate — no handler runs on a bad request.
+            if reg is None or not (reg.access & WRITE_ONLY):
+                secs, ticks = self.clock.now()
+                if not self._replies_muted():
                     await self._send_error(op, address, port, secs, ticks)
                 return
-
+            if len(payload_mv) != len(reg.storage):
+                secs, ticks = self.clock.now()
+                if not self._replies_muted():
+                    await self._send_error(op, address, port, secs, ticks)
+                return
+            # Run the handler immediately — before any reply preparation.
             err = None
             if reg.on_write is not None:
                 err = await reg.on_write(reg, payload_mv)
             else:
-                # Default: copy into storage.
                 reg.storage[:] = payload_mv
-
+            # Timestamp after write completes — reply carries write-done time.
+            secs, ticks = self.clock.now()
+            muted = self._replies_muted()
             if err is not None:
                 if not muted:
                     await self._send_error(op, address, port, secs, ticks)
                 return
-
             # Spec ordering: WRITE reply first, then DUMP messages (if any).
             if not muted:
                 await self._send_reg_reply(MSG_WRITE, reg, port, secs, ticks)
-
-            # Did the host write OperationControl with DUMP set?  Per spec,
-            # the DUMP read replies follow the WRITE reply.  MUTE_RPL also
-            # suppresses these.
             if (address == R_OPERATION_CONTROL
                     and (reg.storage[0] & OP_DUMP)
                     and not muted):
                 await self._dump_all_registers(port)
-                # Auto-clear the DUMP bit after dumping.
                 reg.storage[0] = reg.storage[0] & ~OP_DUMP
 
         else:
