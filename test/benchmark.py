@@ -589,7 +589,7 @@ def section_restore_standby(ser):
     cur = rep["payload"][0]
     new = cur & ~(OP_OP_MODE_MASK | OP_MUTE_REPLIES)
     request_reply(ser, MSG_WRITE, R_OPERATION_CONTROL, bytes([new]), PT_U8)
-    request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
+    # request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +633,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", default="COM8" if sys.platform == "win32" else "/dev/ttyACM0")
     p.add_argument("--baud", type=int, default=1_000_000, help="Ignored over USB CDC; required for UART transport")
-    p.add_argument("--read-bench", type=int, default=200)
+    p.add_argument("--read-bench", type=int, default=50)
     p.add_argument("--write-bench", type=int, default=50)
     p.add_argument("--listen", type=float, default=5.0, help="Active-mode listen duration, seconds")
     p.add_argument("--skip-active", action="store_true", help="Don't enter Active mode (for read-only testing)")
