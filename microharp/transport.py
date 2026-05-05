@@ -257,10 +257,11 @@ async def usb_tx_task(transport: StreamTransport, tx_queue: Queue, slab_pool: Sl
 
         # Write each slab back-to-back; the underlying CDC stack packs
         # consecutive small writes into one USB packet on most ports.
-        for mv in pending_mvs:
+        # Release each slab immediately after its own write so the pool is
+        # not held exhausted while the next write's drain() yields — which
+        # would block dispatch_task from leasing a slab for the next reply.
+        for mv, idx in zip(pending_mvs, pending_idxs):
             await write(mv)
-
-        for idx in pending_idxs:
             release(idx)
 
         pending_idxs.clear()

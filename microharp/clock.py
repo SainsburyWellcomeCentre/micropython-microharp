@@ -186,6 +186,27 @@ class Clock:
         struct.pack_into("<IH", out, offset, secs & 0xFFFFFFFF, ticks & 0xFFFF)
 
     @_native
+    def now_fast(self, arr: list):
+        """Write current (secs, ticks) into arr[0] / arr[1].
+
+        `arr` must be a pre-allocated 2-element list.  Uses list slots so
+        that secs is stored as a *reference* to the existing self._seconds
+        object — no new heap allocation even when seconds > small-int range.
+        Eliminates the 2-tuple that clock.now() creates on every call.
+        """
+        delta_us = time.ticks_diff(_ticks_us(), self._epoch_us)
+        if delta_us < 0:
+            delta_us = 0
+        if delta_us >= 1_000_000:
+            extra = delta_us // 1_000_000
+            rem = delta_us - extra * 1_000_000
+            arr[0] = (self._seconds + extra) & 0xFFFFFFFF
+            arr[1] = rem // US_PER_TICK
+        else:
+            arr[0] = self._seconds
+            arr[1] = delta_us // US_PER_TICK
+
+    @_native
     def _compute(self):
         # `time.ticks_diff` and the fast `_ticks_us()` are C-implemented;
         # the Python-level cost here is the arithmetic and tuple return.

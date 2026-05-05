@@ -30,6 +30,7 @@ from .framing import (
     MSG_FLAG_ERROR,
     encode_into,
     parse_header,
+    parse_header_into,
 )
 from .registers import (
     READ_ONLY,
@@ -49,7 +50,7 @@ from .transport import SlabPool
 class Dispatcher:
     """Owns the register bank, slab pool, and TX queue references."""
 
-    __slots__ = ("bank", "clock", "rx_q", "tx_q", "slabs", "default_port", "errors")
+    __slots__ = ("bank", "clock", "rx_q", "tx_q", "slabs", "default_port", "errors", "_h", "_ts")
 
     def __init__(self, bank: RegisterBank, clock: Clock, rx_queue: Queue, tx_queue: Queue, slab_pool: SlabPool, default_port: int = 255):
         self.bank = bank
@@ -62,6 +63,11 @@ class Dispatcher:
         # apps that want to publish it in a register.  We deliberately do
         # NOT print, because stdout may be the Harp wire.
         self.errors = 0
+        # Pre-allocated scratch for the dispatch hot path — avoids creating
+        # a new 9-tuple (parse_header_into) and 2-tuples (now_fast) on every
+        # message, which otherwise accumulate until a stop-the-world GC fires.
+        self._h = [0, 0, 0, 0, 0, 0, 0]  # parse_header_into output
+        self._ts = [0, 0]                  # now_fast output: [secs, ticks]
 
     # ---- helpers ---------------------------------------------------------
 
@@ -111,13 +117,23 @@ class Dispatcher:
     # ---- main loop -------------------------------------------------------
 
     async def run(self):
+        import gc as _gc
+        import time as _time
         # Cache bound methods so the inner loop is LOAD_FAST, not LOAD_ATTR.
         rx_get = self.rx_q.get
+        rx_empty = self.rx_q.empty
         slabs = self.slabs
         slabs_buf = slabs.buf
         slabs_length = slabs.length
         slabs_release = slabs.release
         handle_one = self._handle_one
+
+        # Proactive GC: collect while rx_q is idle, but at most once per
+        # _GC_MS.  This drains the heap BEFORE it fills so the automatic GC
+        # never fires mid-message (a full-heap GC on RP2040 takes ~10-15 ms;
+        # a near-empty one here takes <1 ms and doesn't appear as an outlier).
+        _GC_MS = 1000
+        _last_gc = _time.ticks_ms()
 
         while True:
             slab_idx = await rx_get()
@@ -129,42 +145,50 @@ class Dispatcher:
                 self.errors = (self.errors + 1) & 0xFFFFFFFF
             finally:
                 slabs_release(slab_idx)
+            if rx_empty():
+                now = _time.ticks_ms()
+                if _time.ticks_diff(now, _last_gc) >= _GC_MS:
+                    _gc.collect()
+                    _last_gc = now
 
     async def _handle_one(self, slab: bytearray, length: int):
         mv = memoryview(slab)[:length]
-        msg_type, address, port, pt, has_ts, _, _, po, pl = parse_header(mv)
-        # Strip error-bit if a host echo'd one back.
-        op = msg_type & 0x07
+        h = self._h
+        ts = self._ts
+        parse_header_into(mv, h)
+        # h[0]=msg_type, h[1]=address, h[2]=port, h[3]=pt,
+        # h[4]=has_ts,   h[5]=po,      h[6]=pl
+        op = h[0] & 0x07
 
-        reg = self.bank.get(address)
+        reg = self.bank.get(h[1])
 
         if op == MSG_READ:
             # Validate — then run the handler immediately, before any reply
             # preparation (muted check, timestamp, slab lease, encode).
             if reg is None or not (reg.access & READ_ONLY):
-                secs, ticks = self.clock.now()
+                self.clock.now_fast(ts)
                 if not self._replies_muted():
-                    await self._send_error(op, address, port, secs, ticks)
+                    await self._send_error(op, h[1], h[2], ts[0], ts[1])
                 return
             if reg.on_read is not None:
                 await reg.on_read(reg)
             # Timestamp after handler — reflects when the value was sampled.
-            secs, ticks = self.clock.now()
+            self.clock.now_fast(ts)
             if not self._replies_muted():
-                await self._send_reg_reply(MSG_READ, reg, port, secs, ticks)
+                await self._send_reg_reply(MSG_READ, reg, h[2], ts[0], ts[1])
 
         elif op == MSG_WRITE:
-            payload_mv = mv[po : po + pl]
+            payload_mv = mv[h[5] : h[5] + h[6]]
             # Validate — no handler runs on a bad request.
             if reg is None or not (reg.access & WRITE_ONLY):
-                secs, ticks = self.clock.now()
+                self.clock.now_fast(ts)
                 if not self._replies_muted():
-                    await self._send_error(op, address, port, secs, ticks)
+                    await self._send_error(op, h[1], h[2], ts[0], ts[1])
                 return
             if len(payload_mv) != len(reg.storage):
-                secs, ticks = self.clock.now()
+                self.clock.now_fast(ts)
                 if not self._replies_muted():
-                    await self._send_error(op, address, port, secs, ticks)
+                    await self._send_error(op, h[1], h[2], ts[0], ts[1])
                 return
             # Run the handler immediately — before any reply preparation.
             err = None
@@ -173,19 +197,19 @@ class Dispatcher:
             else:
                 reg.storage[:] = payload_mv
             # Timestamp after write completes — reply carries write-done time.
-            secs, ticks = self.clock.now()
+            self.clock.now_fast(ts)
             muted = self._replies_muted()
             if err is not None:
                 if not muted:
-                    await self._send_error(op, address, port, secs, ticks)
+                    await self._send_error(op, h[1], h[2], ts[0], ts[1])
                 return
             # Spec ordering: WRITE reply first, then DUMP messages (if any).
             if not muted:
-                await self._send_reg_reply(MSG_WRITE, reg, port, secs, ticks)
-            if (address == R_OPERATION_CONTROL
+                await self._send_reg_reply(MSG_WRITE, reg, h[2], ts[0], ts[1])
+            if (h[1] == R_OPERATION_CONTROL
                     and (reg.storage[0] & OP_DUMP)
                     and not muted):
-                await self._dump_all_registers(port)
+                await self._dump_all_registers(h[2])
                 reg.storage[0] = reg.storage[0] & ~OP_DUMP
 
         else:
@@ -196,14 +220,15 @@ class Dispatcher:
         """Emit one READ reply per register in the bank.  Each carries
         its own timestamp (the moment that register was sampled), per
         Harp convention for DUMP replies."""
+        ts = self._ts
         for r in self.bank:
             if not (r.access & READ_ONLY):
                 # Write-only register — skip in DUMP.
                 continue
             if r.on_read is not None:
                 await r.on_read(r)
-            secs, ticks = self.clock.now()
-            await self._send_reg_reply(MSG_READ, r, port, secs, ticks)
+            self.clock.now_fast(ts)
+            await self._send_reg_reply(MSG_READ, r, port, ts[0], ts[1])
 
 
 async def dispatch_task(dispatcher: Dispatcher):

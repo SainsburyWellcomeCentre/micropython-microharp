@@ -278,3 +278,32 @@ def parse_header(frame_mv: memoryview):
         po = 5
     pl = (2 + length) - po - 1  # subtract checksum byte
     return msg_type, address, port, pt, has_ts, secs, ticks, po, pl
+
+
+@_native
+def parse_header_into(frame_mv: memoryview, out: list):
+    """Allocation-free variant of parse_header for the hot dispatch path.
+
+    Writes into a pre-allocated 7-element list:
+        out[0] = msg_type
+        out[1] = address
+        out[2] = port
+        out[3] = payload_type (pt)
+        out[4] = has_ts (0 or 1)
+        out[5] = payload_offset (po)
+        out[6] = payload_length (pl)
+
+    Incoming timestamp bytes are NOT extracted — the dispatcher discards
+    them and timestamps replies from its own clock.  This avoids the
+    struct.unpack_from 2-tuple and the 9-tuple return entirely.
+    """
+    out[0] = frame_mv[0]          # msg_type
+    out[1] = frame_mv[2]          # address
+    out[2] = frame_mv[3]          # port
+    pt = frame_mv[4]
+    out[3] = pt
+    has_ts = 1 if (pt & PT_HAS_TIMESTAMP) else 0
+    out[4] = has_ts
+    po = 11 if has_ts else 5
+    out[5] = po
+    out[6] = (2 + frame_mv[1]) - po - 1  # pl
