@@ -9,11 +9,11 @@ RP2040/RP2350/ESP32 and any other MicroPython port with USB CDC or UART.
 
 | Document                                   | What it covers                                                |
 | ------------------------------------------ | ------------------------------------------------------------- |
-| [doc/TRANSPORTS.md](doc/TRANSPORTS.md)     | CDC / UART / custom transports + slab pool tuning.            |
-| [doc/TASKS.md](doc/TASKS.md)               | `@device.task` patterns, pin events, custom event sources.    |
-| [doc/API.md](doc/API.md)                   | Public API reference: `HarpDevice`, payload types, registers. |
-| [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) | Internals: clock sync, IRQ bridge, slab pool, performance.    |
-| [doc/TESTING.md](doc/TESTING.md)           | Running the CPython unit tests and adding new ones.           |
+| [TRANSPORTS.md](doc/TRANSPORTS.md)     | CDC / UART / custom transports + slab pool tuning.            |
+| [TASKS.md](doc/TASKS.md)               | `@device.task` patterns, pin events, custom event sources.    |
+| [API.md](doc/API.md)                   | Public API reference: `HarpDevice`, payload types, registers. |
+| [ARCHITECTURE.md](doc/ARCHITECTURE.md) | Internals: clock sync, IRQ bridge, slab pool, performance.    |
+| [TESTING.md](doc/TESTING.md)           | Running the CPython unit tests and adding new ones.           |
 
 ## Install
 
