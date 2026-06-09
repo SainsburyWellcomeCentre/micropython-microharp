@@ -1,5 +1,8 @@
 # microharp
 
+[![GitHub release](https://img.shields.io/github/v/release/SainsburyWellcomeCentre/micropython-microharp?style=flat-square&cacheSeconds=3600)](https://github.com/SainsburyWellcomeCentre/micropython-microharp/releases)
+[![GitHub issues](https://img.shields.io/github/issues/SainsburyWellcomeCentre/micropython-microharp?style=flat-square)](https://github.com/SainsburyWellcomeCentre/micropython-microharp/issues)
+
 Async MicroPython implementation of the [Harp protocol](https://github.com/harp-tech/protocol):
 8-bit binary message framing, sync clock discipline, register-based
 device model, and timestamped events. Designed for low-jitter I/O on
@@ -7,8 +10,8 @@ RP2040/RP2350/ESP32 and any other MicroPython port with USB CDC or UART.
 
 ## Documentation
 
-| Document                                   | What it covers                                                |
-| ------------------------------------------ | ------------------------------------------------------------- |
+| Document                               | What it covers                                                |
+| -------------------------------------- | ------------------------------------------------------------- |
 | [TRANSPORTS.md](doc/TRANSPORTS.md)     | CDC / UART / custom transports + slab pool tuning.            |
 | [TASKS.md](doc/TASKS.md)               | `@device.task` patterns, pin events, custom event sources.    |
 | [API.md](doc/API.md)                   | Public API reference: `HarpDevice`, payload types, registers. |
@@ -22,7 +25,7 @@ Install via [`mip`](https://docs.micropython.org/en/latest/reference/packages.ht
 declared in `package.json` and pulled in automatically:
 
 ```bash
-mpremote mip install github:DCisHurt/micropython-microharp
+mpremote mip install github:SainsburyWellcomeCentre/micropython-microharp
 ```
 
 For a local development install, copy the package directory to the
@@ -133,3 +136,33 @@ Seven `example_*.py` files in [`example/`](example/) cover the common cases:
 ESP32 hard IRQs have stricter restrictions; `bind_pin_event` falls back
 to soft IRQ semantics if `hard=True` raises. See
 [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the per-port story.
+
+## License
+
+**Sainsbury Wellcome Centre code, firmware, and software is released under the [BSD 3-Clause License](https://opensource.org/license/bsd-3-clause).**
+
+## 📚 Credits
+
+This library references the following resources:
+
+- [Dynamixel2Arduino](https://github.com/ROBOTIS-GIT/dynamixel2arduino)
+- [DynamixelSDK](https://github.com/ROBOTIS-GIT/DynamixelSDK/tree/main)
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+## ❤ Contributors
+
+ <a href = "https://github.com/SainsburyWellcomeCentre/micropython-microharp/graphs/contributors">
+   <img src = "https://contrib.rocks/image?repo=SainsburyWellcomeCentre/micropython-microharp" alt="Contributors"/>
+ </a>
+
+## 📧 Contact
+
+- **Author**: [@DCisHurt](https://github.com/DCisHurt)
+- **Email**: [yuhsuan.chen@ucl.ac.uk](mailto:yuhsuan.chen@ucl.ac.uk)
+- **Website**: [FabLabs](https://sainsburywellcomecentre.github.io/fablabs-documentation/#micropython-microharp)
