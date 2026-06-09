@@ -145,8 +145,7 @@ to soft IRQ semantics if `hard=True` raises. See
 
 This library references the following resources:
 
-- [Dynamixel2Arduino](https://github.com/ROBOTIS-GIT/dynamixel2arduino)
-- [DynamixelSDK](https://github.com/ROBOTIS-GIT/DynamixelSDK/tree/main)
+- [harp-tech/protocol](https://github.com/harp-tech/protocol) — the official Harp protocol specification.
 
 ## 🤝 Contributing
 
