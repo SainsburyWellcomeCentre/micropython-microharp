@@ -23,7 +23,7 @@ from .framing import MSG_EVENT, encode_into, PT_U32
 from .clock import Clock
 
 try:
-    from asyncio import Queue  # available on CPython and MicroPython ≥1.20 with full asyncio
+    from asyncio import Queue  # type: ignore[attr-defined]  # missing from MicroPico stubs
 except (ImportError, AttributeError):
     from .queue import Queue  # fallback for bare RP2 / stripped MicroPython builds
 from .transport import SlabPool

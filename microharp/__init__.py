@@ -2,7 +2,7 @@
 
 Install
 -------
-    mpremote mip install github:DCisHurt/micropython-microharp
+    mpremote mip install github:SainsburyWellcomeCentre/micropython-microharp
         # Pulls usb-device-cdc as a transitive dependency.
 
 Layout
@@ -44,9 +44,9 @@ Running on the device
         mpremote cp -r microharp/ :
         mpremote cp example/example_secondary_cdc.py :main.py
 
-Running the framing self-test on a desktop
-------------------------------------------
-    python tests/test_framing.py
+Running the unit tests on a desktop
+-----------------------------------
+    python -B test/test.py
         # Tests stub `micropython.const`, time.ticks_*, and ThreadSafeFlag
         # so the package imports cleanly under CPython.
 """

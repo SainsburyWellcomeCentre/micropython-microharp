@@ -30,8 +30,6 @@ import sys
 import time
 import struct
 
-# from typing import Any, Callable, Awaitable
-
 if "ptr32" not in globals():
     # Fallback for static analysis and non-viper contexts.
     def ptr32(_addr):
@@ -363,11 +361,11 @@ async def sync_task(uart, clock: Clock, *, baudrate: int = 100_000):
     sreader_readinto = None
     if not irq_installed:
         try:
-            sreader = asyncio.StreamReader(uart)
-            sreader_readinto = getattr(sreader, "readinto", None)
-            if not callable(sreader_readinto):
+            sreader = asyncio.StreamReader(uart)  # type: ignore[attr-defined]  # missing from MicroPico stubs
+            if hasattr(sreader, "readinto"):
+                sreader_readinto = sreader.readinto
+            else:
                 sreader = None
-                sreader_readinto = None
         except (TypeError, AttributeError):
             sreader = None  # port doesn't support stream wrapping
 

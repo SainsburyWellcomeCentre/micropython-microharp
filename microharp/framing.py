@@ -116,7 +116,7 @@ def _pack_value(value, payload_type: int) -> bytes:
 # a few cycles vs. the bytecode interpreter's ~200 ns per iteration.
 
 
-def _checksum_python(buf: bytearray, n: int) -> int:
+def _checksum_python(buf, n: int) -> int:
     cs = 0
     for i in range(n):
         cs += buf[i]
@@ -151,8 +151,8 @@ def encode_into(
     payload_type: int,
     payload=None,
     payload_len: int = 0,
-    ts_seconds: int = None,
-    ts_ticks: int = None,
+    ts_seconds: int | None = None,
+    ts_ticks: int | None = None,
 ) -> int:
     """Write a Harp frame into `buf` starting at offset 0.
 
@@ -216,7 +216,7 @@ class FrameDecoder:
         self._idx = 0
         self._target = 0
 
-    def feed(self, data: bytearray):
+    def feed(self, data: bytes | bytearray | memoryview):
         """Generator: yields memoryview slices for each completed valid frame.
 
         `data` is a bytes/bytearray/memoryview chunk.  The yielded memoryview

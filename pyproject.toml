@@ -1,6 +1,6 @@
 [project]
 name = "micropython-microharp"
-version = "2.1.0"
+version = "2.2.0"
 description = "Async MicroPython implementation of the Harp protocol"
 readme = "README.md"
 license = { file = "LICENSE" }

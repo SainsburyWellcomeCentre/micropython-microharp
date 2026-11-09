@@ -105,7 +105,7 @@ microharp/
   heartbeat.py    1 Hz heartbeat EVENT when enabled
   device.py       HarpDevice — top-level orchestrator + HOFs
   queue.py        small asyncio queue
-example/          seven runnable examples (see below)
+example/          eight runnable examples (see below)
 test/             CPython unit tests + host-side benchmark (benchmark.py)
 doc/              documentation (TRANSPORTS, TASKS, API, ARCHITECTURE, TESTING)
 package.json      mip metadata + dependency declaration
@@ -113,13 +113,14 @@ package.json      mip metadata + dependency declaration
 
 ## Examples
 
-Seven `example_*.py` files in [`example/`](example/) cover the common cases:
+Eight `example_*.py` files in [`example/`](example/) cover the common cases:
 
 | File                           | What it shows                                                                    |
 | ------------------------------ | -------------------------------------------------------------------------------- |
 | `example_secondary_cdc.py`     | Minimal setup — `CdcTransport`, digital input EVENT, REPL on `/dev/ttyACM0`.     |
 | `example_uart.py`              | Hardware UART transport (FTDI / device-to-device).                               |
 | `example_periodic_event.py`    | 10 Hz ADC → EVENT via a `@device.task` loop.                                     |
+| `example_led_control.py`       | R/W register driving a user LED (off / on / blink) via `on_write` + task loop.   |
 | `example_custom_task.py`       | Three `@device.task` patterns: plain loop, per-second tick, task with arguments. |
 | `example_button_controller.py` | Button spawns/cancels a worker task — declarative `task=` API.                   |
 | `example_3state_timeout.py`    | Three-state sequence with per-state timeouts and error EVENTs.                   |

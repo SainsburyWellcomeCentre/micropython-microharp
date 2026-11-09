@@ -113,13 +113,13 @@ class StreamTransport:
     def __init__(self, stream):
         self._s = stream
         try:
-            self._reader = asyncio.StreamReader(stream)
-            self._writer = asyncio.StreamWriter(stream, {})
+            self._reader = asyncio.StreamReader(stream)  # type: ignore[attr-defined]  # missing from MicroPico stubs
+            self._writer = asyncio.StreamWriter(stream, {})  # type: ignore[attr-defined]
         except (TypeError, AttributeError):
             self._reader = None
             self._writer = None
 
-    async def read_some(self, buf: bytearray):
+    async def read_some(self, buf: bytearray | memoryview):
         if self._reader is not None:
             return await self._reader.readinto(buf)
         s = self._s
@@ -215,7 +215,9 @@ async def usb_rx_task(
 # ---------------------------------------------------------------------------
 
 
-async def usb_tx_task(transport: StreamTransport, tx_queue: Queue, slab_pool: SlabPool, *, hi_queue: Queue = None):
+async def usb_tx_task(
+    transport: StreamTransport, tx_queue: Queue, slab_pool: SlabPool, *, hi_queue: Queue | None = None
+):
     """Drain `tx_queue` (and optional `hi_queue`) and write to the transport.
 
     Slabs are returned to the pool after each successful write.  When

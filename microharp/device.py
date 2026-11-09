@@ -39,21 +39,25 @@ sources.  Application code becomes:
 import asyncio
 import time
 
-# from typing import Any, Callable, Coroutine
-
 try:
-    from asyncio import Queue  # available on CPython and MicroPython ≥1.20 with full asyncio
+    from asyncio import Queue  # type: ignore[attr-defined]  # missing from MicroPico stubs
 except (ImportError, AttributeError):
     from .queue import Queue  # fallback for bare RP2 / stripped MicroPython builds
 
 from .clock import Clock, sync_task, second_ticker
 from .registers import (
+    R_HARP_VERSION_H,
+    R_HARP_VERSION_L,
+    R_VERSION,
     RegisterEntry,
     RegisterBank,
     READ_ONLY,
     WRITE_ONLY,
     READ_WRITE,
     EVENT,
+    R_DEVICE_NAME,
+    R_OPERATION_CONTROL,
+    OP_OP_MODE_MASK,
     install_common_registers,
 )
 from .framing import FrameDecoder
@@ -102,11 +106,12 @@ class HarpDevice:
         self,
         transport: StreamTransport,
         *,
-        sync_uart: UART,
-        led_pin: Pin,
+        sync_uart: UART | None = None,
+        led_pin: Pin | None = None,
         who_am_i: int = 0,
         fw_version: tuple = (1, 0),
         hw_version: tuple = (1, 0),
+        harp_version: tuple = (1, 13),
         device_name: bytes = b"harp-mpy",
         serial_number: int = 0,
         slab_count: int = DEFAULT_SLAB_COUNT,
@@ -132,6 +137,8 @@ class HarpDevice:
             fw_minor=fw_version[1],
             hw_major=hw_version[0],
             hw_minor=hw_version[1],
+            harp_major=harp_version[0],
+            harp_minor=harp_version[1],
             device_name=device_name,
             serial_number=serial_number,
             clock=self.clock,
@@ -162,8 +169,6 @@ class HarpDevice:
         OperationControl explicitly when it wants events.
         """
         if line_state & 0x01:
-            from .registers import R_OPERATION_CONTROL, OP_OP_MODE_MASK
-
             op = self.bank.get(R_OPERATION_CONTROL)
             if op is not None:
                 op.storage[0] &= ~OP_OP_MODE_MASK  # → STANDBY
@@ -189,10 +194,22 @@ class HarpDevice:
         return reg
 
     def set_name(self, name: str):
-        """Set the device name (max 24 chars, null-padded to 25 bytes)."""
+        """Set the DeviceName register (max 24 chars, null-padded to 25 bytes)."""
         encoded = name.encode("ascii")[: DEVICE_NAME_LEN - 1]
-        padded = encoded + bytes(DEVICE_NAME_LEN - len(encoded))
-        return tuple(padded)
+        reg = self.bank.get(R_DEVICE_NAME)
+        assert reg is not None  # installed by install_common_registers()
+        reg.storage[:] = encoded + bytes(DEVICE_NAME_LEN - len(encoded))
+
+    def set_harp_version(self, version: tuple):
+        """Set the HARP_VERSION registers and the Version register's PROTOCOL field."""
+        reg_h = self.bank.get(R_HARP_VERSION_H)
+        reg_l = self.bank.get(R_HARP_VERSION_L)
+        reg_v = self.bank.get(R_VERSION)
+        assert reg_h is not None and reg_l is not None and reg_v is not None  # installed by install_common_registers()
+        reg_h.storage[0] = version[0]
+        reg_l.storage[0] = version[1]
+        reg_v.storage[0] = version[0]
+        reg_v.storage[1] = version[1]
 
     # Typed shortcuts (just sugar over add_register with PT_* preset).
     def add_u8(self, address: int, **kw):
@@ -478,10 +495,12 @@ class HarpDevice:
             _lc = sequence
             _ls = level_state
 
-            def _task_hook(level, _l=_lc, _ls=_ls, _nt=_NO_TRANSITION):
+            def _sequence_hook(level, _l=_lc, _ls=_ls, _nt=_NO_TRANSITION):
                 s = _ls.get(level, _nt)
                 if s is not _nt:
                     _l(s)
+
+            _task_hook = _sequence_hook
 
         elif task is not None:
             import micropython
@@ -503,8 +522,10 @@ class HarpDevice:
 
             _schedule = micropython.schedule
 
-            def _task_hook(level, _s=_schedule, _lc=_sequence_cb):
+            def _schedule_hook(level, _s=_schedule, _lc=_sequence_cb):
                 _s(_lc, level)
+
+            _task_hook = _schedule_hook
 
         # Compose the final IRQ handler with up to 2 hooks (on_irq + _task_hook).
         # Hand-roll each arity so the no-hook and 1-hook paths stay byte-identical
@@ -512,54 +533,64 @@ class HarpDevice:
         # pre-binding the calls.  When `_emit is None` (address=None case), the
         # Harp-event emission is skipped entirely.
         if _emit is not None:
-            if on_irq is None and _task_hook is None:
+            if on_irq is None:
+                if _task_hook is None:
 
-                def _irq_handler(p, _e=_emit, _v=_pin_value):
-                    _e(_v())
+                    def _irq_emit(p, _e=_emit, _v=_pin_value):
+                        _e(_v())
 
-            elif on_irq is not None and _task_hook is None:
+                    _irq_handler = _irq_emit
+                else:
 
-                def _irq_handler(p, _e=_emit, _v=_pin_value, _h=on_irq):
+                    def _irq_emit_task(p, _e=_emit, _v=_pin_value, _h=_task_hook):
+                        v = _v()
+                        _e(v)
+                        _h(v)
+
+                    _irq_handler = _irq_emit_task
+            elif _task_hook is None:
+
+                def _irq_emit_cb(p, _e=_emit, _v=_pin_value, _h=on_irq):
                     v = _v()
                     _e(v)
                     _h(v)
 
-            elif on_irq is None and _task_hook is not None:
-
-                def _irq_handler(p, _e=_emit, _v=_pin_value, _h=_task_hook):
-                    v = _v()
-                    _e(v)
-                    _h(v)
-
+                _irq_handler = _irq_emit_cb
             else:
 
-                def _irq_handler(p, _e=_emit, _v=_pin_value, _h1=on_irq, _h2=_task_hook):
+                def _irq_emit_cb_task(p, _e=_emit, _v=_pin_value, _h1=on_irq, _h2=_task_hook):
                     v = _v()
                     _e(v)
                     _h1(v)
                     _h2(v)
+
+                _irq_handler = _irq_emit_cb_task
 
         else:
             # No event emission (address=None).  At least one of on_irq /
             # _task_hook must be present for the pin to do anything.
-            if on_irq is None and _task_hook is None:
-                raise ValueError("address=None requires on_irq, task, or sequence")
-            if on_irq is not None and _task_hook is None:
+            if on_irq is None:
+                if _task_hook is None:
+                    raise ValueError("address=None requires on_irq, task, or sequence")
 
-                def _irq_handler(p, _v=_pin_value, _h=on_irq):
+                def _irq_task(p, _v=_pin_value, _h=_task_hook):
                     _h(_v())
 
-            elif on_irq is None and _task_hook is not None:
+                _irq_handler = _irq_task
+            elif _task_hook is None:
 
-                def _irq_handler(p, _v=_pin_value, _h=_task_hook):
+                def _irq_cb(p, _v=_pin_value, _h=on_irq):
                     _h(_v())
 
+                _irq_handler = _irq_cb
             else:
 
-                def _irq_handler(p, _v=_pin_value, _h1=on_irq, _h2=_task_hook):
+                def _irq_cb_task(p, _v=_pin_value, _h1=on_irq, _h2=_task_hook):
                     v = _v()
                     _h1(v)
                     _h2(v)
+
+                _irq_handler = _irq_cb_task
 
         kw = {"handler": _irq_handler, "trigger": trigger}
         try:
@@ -572,7 +603,7 @@ class HarpDevice:
     # Manual emission helpers
     # ------------------------------------------------------------------
 
-    async def emit(self, address: int, payload, payload_type: int = None):
+    async def emit(self, address: int, payload, payload_type: int | None = None):
         """Push an ad-hoc EVENT message for `address`.
 
         `payload` may be:
@@ -721,7 +752,7 @@ class HarpDevice:
 
     async def run(self):
         """Launch all core tasks + event sources + user tasks."""
-        tasks = [
+        tasks: list = [
             usb_rx_task(self.transport, self.decoder, self.rx_q, self.slabs),
             usb_tx_task(self.transport, self.tx_q, self.slabs),
             dispatch_task(self.dispatcher),

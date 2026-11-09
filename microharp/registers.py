@@ -149,6 +149,8 @@ def install_common_registers(
     fw_minor: int = 0,
     hw_major: int = 1,
     hw_minor: int = 0,
+    harp_major: int = 1,
+    harp_minor: int = 13,
     device_name: bytes = b"harp-mpy",
     serial_number: int = 0,
     clock=None,
@@ -179,8 +181,11 @@ def install_common_registers(
     r.storage[0] = hw_minor
 
     _add(R_ASSEMBLY_VERSION, PT_U8, access=READ_ONLY, name="AssemblyVersion")
-    _add(R_HARP_VERSION_H, PT_U8, access=READ_ONLY, name="CoreVersionH")
-    _add(R_HARP_VERSION_L, PT_U8, access=READ_ONLY, name="CoreVersionL")
+
+    r = _add(R_HARP_VERSION_H, PT_U8, access=READ_ONLY, name="CoreVersionH")
+    r.storage[0] = harp_major
+    r = _add(R_HARP_VERSION_L, PT_U8, access=READ_ONLY, name="CoreVersionL")
+    r.storage[0] = harp_minor
 
     r = _add(R_FW_VERSION_H, PT_U8, access=READ_ONLY, name="FwVersionH")
     r.storage[0] = fw_major
@@ -260,9 +265,9 @@ def install_common_registers(
     rd = _add(R_RESET_DEV, PT_U8, access=WRITE_ONLY, name="ResetDevice")
     rd.on_write = _reset_on_write
 
-    # DeviceName: U8 array.  Pad/truncate to fit a fixed slot.
-    # name_len = min(len(device_name), 25)
+    # DeviceName: U8 array.  Truncate to 24 bytes, null-pad to a fixed 25-byte slot.
     name_len = 25
+    device_name = device_name[: name_len - 1]
     rn = bank.add(RegisterEntry(R_DEVICE_NAME, PT_U8, n_elements=name_len, access=READ_WRITE, name="DeviceName"))
     rn.storage[:name_len] = device_name + bytes(name_len - len(device_name))
 
@@ -295,10 +300,12 @@ def install_common_registers(
     #   [9..11] CORE_ID   (3 chars)
     #   [12..31] INTERFACE_HASH (SHA-1 of device.yml; little-endian; 0 = unset)
     rv = bank.add(RegisterEntry(R_VERSION, PT_U8, n_elements=32, access=READ_ONLY, name="Version"))
+    rv.storage[0] = harp_major
+    rv.storage[1] = harp_minor
     rv.storage[3] = fw_major
     rv.storage[4] = fw_minor
     rv.storage[6] = hw_major
     rv.storage[7] = hw_minor
-    # PROTOCOL, CORE_ID, INTERFACE_HASH default to zero per spec.
+    # Patch bytes, CORE_ID, INTERFACE_HASH default to zero per spec.
 
     return bank
