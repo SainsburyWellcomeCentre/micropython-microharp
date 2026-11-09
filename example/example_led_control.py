@@ -20,9 +20,9 @@ from usb.device.cdc import CDCInterface
 import usb.device
 from microharp import HarpDevice, CdcTransport, PT_U8, READ_WRITE
 
-USER_LED_PIN   = 14
+USER_LED_PIN = 14
 STATUS_LED_PIN = 25
-ADDR_LED       = 0x20
+ADDR_LED = 0x20
 
 cdc = CDCInterface(baudrate=1_000_000, timeout=0, txbuf=2048, rxbuf=512)
 usb.device.get().init(cdc, builtin_driver=True)
@@ -43,11 +43,13 @@ led_mode = 0  # 0=off, 1=on, 2=blink
 
 led_reg = device.add_u8(ADDR_LED, access=READ_WRITE, name="LEDControl")
 
+
 @device.on_write(address=ADDR_LED, payload_type=PT_U8, name="LEDControl")
 async def _write_led(reg, payload):
     global led_mode
     led_mode = payload[0]
     reg.storage[0] = payload[0]
+
 
 @device.task
 async def _led_loop():
@@ -64,5 +66,6 @@ async def _led_loop():
         else:
             led.value(0)
             await asyncio.sleep_ms(50)
+
 
 asyncio.run(device.run())

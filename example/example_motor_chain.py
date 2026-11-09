@@ -40,8 +40,8 @@ from machine import Pin, UART
 
 from microharp import HarpDevice, CdcTransport, PT_U8, READ_WRITE, EVENT
 
-
 # ---- Fake motor ------------------------------------------------------------
+
 
 class FakeMotor:
     """Simulated position-seeking motor.
@@ -50,6 +50,7 @@ class FakeMotor:
     `duration_ms`.  `poll()` returns "moving", "done", or "error" — and
     "done" the moment current position equals target (no extra wait).
     """
+
     __slots__ = ("_start_ms", "_duration_ms", "_start_pos", "_target", "_fail")
 
     def __init__(self):
@@ -69,11 +70,11 @@ class FakeMotor:
         return self._start_pos + (self._target - self._start_pos) * elapsed // self._duration_ms
 
     def move_to(self, target, duration_ms, *, fail=False):
-        self._start_pos   = self.position
-        self._start_ms    = time.ticks_ms()
+        self._start_pos = self.position
+        self._start_ms = time.ticks_ms()
         self._duration_ms = duration_ms
-        self._target      = target
-        self._fail        = fail
+        self._target = target
+        self._fail = fail
 
     def poll(self):
         elapsed = time.ticks_diff(time.ticks_ms(), self._start_ms)
@@ -86,9 +87,9 @@ class FakeMotor:
 
 # ---- Device + registers ----------------------------------------------------
 
-ADDR_RUN       = 0x21
-ADDR_STATUS      = 0x22
-ADDR_PIN_CANCEL  = 0x23
+ADDR_RUN = 0x21
+ADDR_STATUS = 0x22
+ADDR_PIN_CANCEL = 0x23
 
 
 Pin(20, Pin.OUT, value=0)
@@ -97,6 +98,7 @@ Pin(21, Pin.OUT, value=1)
 from usb.device.cdc import CDCInterface
 import usb.device
 from microharp import CdcTransport
+
 cdc = CDCInterface(baudrate=1_000_000, timeout=0, txbuf=2048, rxbuf=512)
 usb.device.get().init(cdc, builtin_driver=True)
 transport = CdcTransport(cdc)
@@ -112,11 +114,12 @@ device = HarpDevice(
     serial_number=5,
 )
 
-run_reg  = device.add_register(ADDR_RUN,  PT_U8, access=READ_WRITE | EVENT, name="State")
+run_reg = device.add_register(ADDR_RUN, PT_U8, access=READ_WRITE | EVENT, name="State")
 status_reg = device.add_register(ADDR_STATUS, PT_U8, access=READ_WRITE | EVENT, name="Status")
 
 
 # ---- Status / state-flag helper -------------------------------------------
+
 
 async def set_status(code, _sr=status_reg, _ar=run_reg):
     """Update 0x22 (always EVENT) and 0x21 (auto-reset on idle/error)."""
@@ -175,8 +178,8 @@ sequence = device.add_task_sequence(
     states={"A": (taskA, 20), "B": (taskB, 30)},
     on_timeout=on_timeout,
     guards={
-        "A": lambda _r=status_reg: _r.storage[0] == 0,    # only from idle
-        "B": lambda _r=status_reg: _r.storage[0] == 1,    # only from running A
+        "A": lambda _r=status_reg: _r.storage[0] == 0,  # only from idle
+        "B": lambda _r=status_reg: _r.storage[0] == 1,  # only from running A
     },
 )
 
@@ -188,9 +191,10 @@ sequence = device.add_task_sequence(
 # IRQ context, then bounces an EVENT-emit + sequence-trigger through
 # micropython.schedule so create_task runs in safe context.
 
+
 async def _pin_request_async():
     await device.emit(ADDR_RUN, 1)
-    sequence("A")                                          # gated by status==0
+    sequence("A")  # gated by status==0
 
 
 def _pin_request_sched(_arg):
@@ -206,7 +210,7 @@ def _on_pin_irq(level, _r=run_reg, _s=micropython.schedule, _f=_pin_request_sche
 
 device.bind_pin_event(
     Pin(29, Pin.IN, Pin.PULL_UP),
-    address=None,                                          # no event register
+    address=None,  # no event register
     trigger=Pin.IRQ_FALLING,
     on_irq=_on_pin_irq,
 )
@@ -214,10 +218,11 @@ device.bind_pin_event(
 
 # Host write to 0x21: write 1 requests taskA; write 0 ignored (per spec).
 
+
 async def _on_state_write(reg, payload):
     if payload[0] == 1:
-        reg.storage[0] = 1                                  # mirror; host knows
-        sequence("A")                                       # gated
+        reg.storage[0] = 1  # mirror; host knows
+        sequence("A")  # gated
 
 
 run_reg.on_write = _on_state_write
@@ -226,9 +231,11 @@ run_reg.on_write = _on_state_write
 # Cancel pin GP15 (rising edge): start taskB.  Falling edge: no-op.
 device.bind_pin_event(
     Pin(15, Pin.IN, Pin.PULL_DOWN),
-    address=ADDR_PIN_CANCEL, payload_type=PT_U8,
+    address=ADDR_PIN_CANCEL,
+    payload_type=PT_U8,
     trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
-    sequence=sequence, level_state={1: "B"},                # falling: no-op
+    sequence=sequence,
+    level_state={1: "B"},  # falling: no-op
     name="PinCancel",
 )
 

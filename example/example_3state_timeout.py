@@ -34,8 +34,8 @@ import usb.device
 from microharp import HarpDevice, CdcTransport, PT_U8
 
 ADDR_BUTTON = 0x20
-ADDR_STATE  = 0x21
-ADDR_ERROR  = 0x22
+ADDR_STATE = 0x21
+ADDR_ERROR = 0x22
 
 cdc = CDCInterface(baudrate=1_000_000, timeout=0, txbuf=2048, rxbuf=512)
 usb.device.get().init(cdc, builtin_driver=True)
@@ -88,7 +88,7 @@ async def on_timeout(name):
 
 sequence = device.add_task_sequence(
     states={
-        "A": (taskA,  5),
+        "A": (taskA, 5),
         "B": (taskB, 10),
     },
     on_timeout=on_timeout,
@@ -96,15 +96,20 @@ sequence = device.add_task_sequence(
 
 button = Pin(14, Pin.IN, Pin.PULL_UP)
 device.bind_pin_event(
-    button, address=ADDR_BUTTON, payload_type=PT_U8,
+    button,
+    address=ADDR_BUTTON,
+    payload_type=PT_U8,
     trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
-    sequence=sequence, level_state={0: "A", 1: "B"},
+    sequence=sequence,
+    level_state={0: "A", 1: "B"},
     name="Button",
 )
 
 device.bind_state_register(
-    address=ADDR_STATE, payload_type=PT_U8,
-    sequence=sequence, mapping={1: "A", 0: "B"},
+    address=ADDR_STATE,
+    payload_type=PT_U8,
+    sequence=sequence,
+    mapping={1: "A", 0: "B"},
     name="State",
 )
 
