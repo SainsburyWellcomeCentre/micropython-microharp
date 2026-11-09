@@ -1,3 +1,5 @@
+# Host-side CPython script; workspace typeshed is MicroPython stubs (no time.perf_counter etc.).
+# pyright: reportAttributeAccessIssue=false, reportCallIssue=false
 """Host-side Harp debug + benchmark client.
 
 Talks to a Harp device over a serial port (USB CDC or UART bridge).
@@ -266,15 +268,14 @@ def _fmt_version_array(payload):
     then CORE_ID 3 ASCII chars, then INTERFACE_HASH 20 bytes SHA-1 LE."""
     if len(payload) < 12:
         return payload.hex(" ")
-    proto  = "%d.%d.%d" % (payload[0], payload[1], payload[2])
-    fw     = "%d.%d.%d" % (payload[3], payload[4], payload[5])
-    hw     = "%d.%d.%d" % (payload[6], payload[7], payload[8])
+    proto = "%d.%d.%d" % (payload[0], payload[1], payload[2])
+    fw = "%d.%d.%d" % (payload[3], payload[4], payload[5])
+    hw = "%d.%d.%d" % (payload[6], payload[7], payload[8])
     try:
         core_id = bytes(payload[9:12]).decode("ascii").rstrip("\x00")
     except Exception:
         core_id = payload[9:12].hex()
-    parts = ["PROTOCOL=%s" % proto, "FIRMWARE=%s" % fw,
-             "HARDWARE=%s" % hw, "CORE_ID=%s" % core_id]
+    parts = ["PROTOCOL=%s" % proto, "FIRMWARE=%s" % fw, "HARDWARE=%s" % hw, "CORE_ID=%s" % core_id]
     if len(payload) >= 32:
         ih = bytes(payload[12:32])
         if any(ih):
@@ -284,9 +285,7 @@ def _fmt_version_array(payload):
 
 def _fmt_heartbeat(val):
     """R_HEARTBEAT (U16): IS_ACTIVE [bit 0], IS_SYNCHRONIZED [bit 1]."""
-    return "IS_ACTIVE=%s  IS_SYNCHRONIZED=%s" % (
-        bool(val & 0x01), bool(val & 0x02)
-    )
+    return "IS_ACTIVE=%s  IS_SYNCHRONIZED=%s" % (bool(val & 0x01), bool(val & 0x02))
 
 
 def fmt_payload(addr, payload):
@@ -309,8 +308,19 @@ def fmt_payload(addr, payload):
     if addr == R_HEARTBEAT and fmt:
         val = struct.unpack(fmt, payload)[0]
         return _fmt_heartbeat(val)
-    if addr in (R_HW_VERSION_H, R_HW_VERSION_L, R_FW_VERSION_H, R_FW_VERSION_L,
-                R_HARP_VERSION_H, R_HARP_VERSION_L, R_ASSEMBLY_VERSION) and fmt:
+    if (
+        addr
+        in (
+            R_HW_VERSION_H,
+            R_HW_VERSION_L,
+            R_FW_VERSION_H,
+            R_FW_VERSION_L,
+            R_HARP_VERSION_H,
+            R_HARP_VERSION_L,
+            R_ASSEMBLY_VERSION,
+        )
+        and fmt
+    ):
         return str(struct.unpack(fmt, payload)[0])
 
     if fmt is None:
@@ -345,10 +355,15 @@ def section_reset_clock(ser):
 
 # Deprecated registers — still read for dump compliance but not shown in table.
 DEPRECATED = {
-    R_HW_VERSION_H, R_HW_VERSION_L, R_ASSEMBLY_VERSION,
-    R_HARP_VERSION_H, R_HARP_VERSION_L,
-    R_FW_VERSION_H, R_FW_VERSION_L,
-    R_SERIAL_NUMBER, R_TIMESTAMP_OFFSET,
+    R_HW_VERSION_H,
+    R_HW_VERSION_L,
+    R_ASSEMBLY_VERSION,
+    R_HARP_VERSION_H,
+    R_HARP_VERSION_L,
+    R_FW_VERSION_H,
+    R_FW_VERSION_L,
+    R_SERIAL_NUMBER,
+    R_TIMESTAMP_OFFSET,
 }
 
 
@@ -361,8 +376,8 @@ def _expand_version(payload):
         return [("  (raw)", payload.hex(" "))]
     rows = [
         ("  PROTOCOL", "%d.%d.%d" % (payload[0], payload[1], payload[2])),
-        ("  FIRMWARE",  "%d.%d.%d" % (payload[3], payload[4], payload[5])),
-        ("  HARDWARE",  "%d.%d.%d" % (payload[6], payload[7], payload[8])),
+        ("  FIRMWARE", "%d.%d.%d" % (payload[3], payload[4], payload[5])),
+        ("  HARDWARE", "%d.%d.%d" % (payload[6], payload[7], payload[8])),
     ]
     try:
         core_id = bytes(payload[9:12]).decode("ascii").rstrip("\x00")
@@ -414,9 +429,7 @@ def section_read_common(ser):
     entries.sort(key=lambda e: (_ORDER.get(e[0], 2), e[0]))
 
     # Column width = widest top-level name OR widest sub-item name.
-    all_names = [n for n, _, _ in entries] + [
-        sub_n for _, _, subs in entries for sub_n, _ in subs
-    ]
+    all_names = [n for n, _, _ in entries] + [sub_n for _, _, subs in entries for sub_n, _ in subs]
     col = max(len(n) for n in all_names) + 2
 
     banner("Registers")
@@ -621,6 +634,7 @@ def _win_timer_resolution_1ms():
         yield
         return
     import ctypes
+
     winmm = ctypes.WinDLL("winmm")
     winmm.timeBeginPeriod(1)
     try:

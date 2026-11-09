@@ -1,3 +1,5 @@
+# Host-side CPython script; workspace typeshed is MicroPython stubs (no time.perf_counter etc.).
+# pyright: reportAttributeAccessIssue=false, reportCallIssue=false
 """Unit tests for microharp on CPython.
 
 Installs small `micropython`, `machine`, `time.ticks_*`, and
