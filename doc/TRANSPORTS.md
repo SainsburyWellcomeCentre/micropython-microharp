@@ -3,30 +3,17 @@
 A _transport_ is the byte pipe between `HarpDevice` and the host. Pick one to
 match your wiring; the rest of the API is identical.
 
-| Class             | Backed by                                  | When to use                                                    |
-| ----------------- | ------------------------------------------ | -------------------------------------------------------------- |
-| `StdioTransport`  | `sys.stdin.buffer` / `sys.stdout.buffer`   | Fastest to prototype. Conflicts with the REPL on the same CDC. |
-| `CdcTransport`    | `usb.device.cdc.CDCInterface()` (MP ≥1.23) | Production. REPL on `/dev/ttyACM0`, Harp on `/dev/ttyACM1`.    |
-| `UartTransport`   | `machine.UART(...)`                        | No USB, or device-to-device link via FTDI.                     |
-| `StreamTransport` | any object with `readinto` + `write`       | Custom transports (BLE, network bridge, ...).                  |
+| Class             | Backed by                                  | When to use                                                 |
+| ----------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| `CdcTransport`    | `usb.device.cdc.CDCInterface()` (MP ≥1.23) | Production. REPL on `/dev/ttyACM0`, Harp on `/dev/ttyACM1`. |
+| `UartTransport`   | `machine.UART(...)`                        | No USB, or device-to-device link via FTDI.                  |
+| `StreamTransport` | any object with `readinto` + `write`       | Custom transports (BLE, network bridge, ...).               |
 
-All four duck-type the same interface — `read_some(buf) -> int` and
+All three duck-type the same interface — `read_some(buf) -> int` and
 `write(memoryview) -> None`. They use `asyncio.StreamReader` /
 `StreamWriter` internally, so reads and writes wake on the port's native
 poll/select mechanism rather than 1 ms polling. A `sleep_ms(0)` yield-loop
 fallback is used only on objects that can't be wrapped.
-
-## StdioTransport
-
-```python
-from microharp import HarpDevice, StdioTransport
-device = HarpDevice(transport=StdioTransport(), ...)
-```
-
-Disable the REPL on the same interface or you'll see Harp framing
-collide with terminal text. Use `CdcTransport` for production.
-
-See [`example/example_basic_stdio.py`](example/example_basic_stdio.py).
 
 ## CdcTransport — secondary CDC interface
 

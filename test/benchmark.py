@@ -15,15 +15,15 @@ Run on Linux/macOS:
 What it does, in order:
     1.  Open the port and clear any pending bytes.
     2.  READ each common register; pretty-print the payload.
-    3.  Write OperationControl with the DUMP bit; receive the dump and
-        verify each register address came back exactly once.
-    4.  Read R_TIMESTAMP_SECOND 200 times back-to-back and report latency
-        as the difference between consecutive device timestamps (not the PC
-        clock) so USB-driver scheduling jitter doesn't inflate the numbers.
-    5.  Write R_CLOCK_CONFIG 50 times and measure write-path latency the
-        same way — device clock before/after, no PC clock involved.
-    6.  Set OperationControl to Active and listen for 5 seconds, printing
-        any heartbeat and event messages that arrive.
+    3.  Write OperationControl with the DUMP bit and count the replies.
+    4.  Read R_TIMESTAMP_SECOND back-to-back (--read-bench, default 50) and
+        report latency as the difference between consecutive device
+        timestamps (not the PC clock) so USB-driver scheduling jitter
+        doesn't inflate the numbers.  PC round-trip time is shown too.
+    5.  Write R_SERIAL_NUMBER back-to-back (--write-bench, default 50) and
+        measure write-path latency the same way.
+    6.  Set OperationControl to Active and listen (--listen, default 5 s),
+        printing any heartbeat and event messages that arrive.
 
 Stop early with Ctrl-C; the script restores the device to Standby on exit
 so subsequent debug sessions start clean.
@@ -61,7 +61,7 @@ PT_S32 = 0x84
 PT_FLOAT = 0x44
 PT_HAS_TIMESTAMP = 0x10
 
-# Common register addresses (matching harp/registers.py)
+# Common register addresses (matching microharp/registers.py)
 R_WHO_AM_I = 0x00
 R_HW_VERSION_H = 0x01
 R_HW_VERSION_L = 0x02
@@ -346,13 +346,6 @@ def banner(s):
 # ---------------------------------------------------------------------------
 
 
-def section_reset_clock(ser):
-    rep, rtt = request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
-    if rep is None or rep["msg_type"] & MSG_FLAG_ERROR:
-        return False
-    return True
-
-
 # Deprecated registers — still read for dump compliance but not shown in table.
 DEPRECATED = {
     R_HW_VERSION_H,
@@ -453,7 +446,6 @@ def section_dump(ser):
     cur = rep["payload"][0]
     new_val = cur | OP_DUMP
     ser.reset_input_buffer()
-    t0 = time.perf_counter()
     ser.write(encode(MSG_WRITE, R_OPERATION_CONTROL, 255, PT_U8, bytes([new_val])))
     ser.flush()
     seen = []
@@ -469,9 +461,7 @@ def section_dump(ser):
             time.sleep(0.05)
             if ser.in_waiting == 0:
                 break
-    elapsed = time.perf_counter() - t0
     print(f"\nDump: {len(seen)} replies")
-    # print(f"\nDump: {len(seen)} replies  [{(elapsed/len(seen)*1000):.1f} ms]")
 
 
 def _avg_us(xs):
@@ -487,10 +477,6 @@ def _std_us(xs):
         return float("nan")
     avg = sum(xs) / len(xs)
     return (sum((x - avg) ** 2 for x in xs) / (len(xs) - 1)) ** 0.5
-
-
-def _std_ms(xs):
-    return _std_us(xs) / 1000
 
 
 def section_clock_read_benchmark(ser, n=200):
@@ -524,7 +510,7 @@ def section_clock_read_benchmark(ser, n=200):
 
     banner(f"Read latency ({n} round trips)")
     print(f"  device avg: {_avg_us(device_rtts):.1f} µs  jitter: {_std_us(device_rtts):.1f} µs")
-    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs  jitter: {_std_ms(pc_rtts)*1000:.1f} µs")
+    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs  jitter: {_std_us(pc_rtts)*1e6:.1f} µs")
 
 
 def section_clock_write_benchmark(ser, n=50):
@@ -553,7 +539,7 @@ def section_clock_write_benchmark(ser, n=50):
 
     banner(f"Write latency ({n} round trips)")
     print(f"  device avg: {_avg_us(device_rtts):.1f} µs  jitter: {_std_us(device_rtts):.1f} µs")
-    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs  jitter: {_std_ms(pc_rtts)*1000:.1f} µs")
+    print(f"  PC avg:     {_avg_ms(pc_rtts)*1000:.1f} µs  jitter: {_std_us(pc_rtts)*1e6:.1f} µs")
 
 
 def section_active_listen(ser, seconds=5.0):
@@ -602,7 +588,6 @@ def section_restore_standby(ser):
     cur = rep["payload"][0]
     new = cur & ~(OP_OP_MODE_MASK | OP_MUTE_REPLIES)
     request_reply(ser, MSG_WRITE, R_OPERATION_CONTROL, bytes([new]), PT_U8)
-    # request_reply(ser, MSG_WRITE, R_TIMESTAMP_SECOND, struct.pack("<I", 0), PT_U32)
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +640,6 @@ def main():
 
     with _win_timer_resolution_1ms(), open_port(args.port, args.baud) as ser:
         try:
-            # section_reset_clock(ser)
             section_read_common(ser)
             section_dump(ser)
             section_clock_read_benchmark(ser, args.read_bench)

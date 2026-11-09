@@ -1,6 +1,6 @@
 """Custom @device.task patterns.
 
-Three of the four task patterns documented in the README:
+Three of the four task patterns documented in doc/TASKS.md:
 
   1. Plain background loop -- decorate a no-arg async function.
   2. Per-second tick -- subscribe to the clock's TickBroadcaster so work
@@ -10,8 +10,6 @@ Three of the four task patterns documented in the README:
 Wiring:
     Sync UART  : UART(1) RX=GP5
     Status LED : GP25
-    Threshold-trigger pin : GP15 (analog or digital sensor proxy here is
-                            just a counter incrementing on every tick)
 """
 
 import asyncio
@@ -87,6 +85,6 @@ async def threshold_watcher(addr, threshold):
         await asyncio.sleep_ms(50)
 
 
-device.task(threshold_watcher(ADDR_ALERT, threshold=42))
+device.task(threshold_watcher(ADDR_ALERT, threshold=42))  # pyright: ignore[reportUnusedCoroutine]  # run() awaits it
 
 asyncio.run(device.run())

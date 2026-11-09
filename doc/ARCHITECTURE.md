@@ -7,7 +7,7 @@ microharp/
   __init__.py     public API
   framing.py      encode/decode + viper checksum
   clock.py        Clock + sync_task (UART RX of sync packets)
-  transport.py    Stdio / Cdc / Uart / generic Stream transports + slab pool
+  transport.py    Cdc / Uart / generic Stream transports + slab pool
   registers.py    RegisterEntry, RegisterBank, common registers 0..19
   dispatch.py     routes parsed frames to register handlers
   events.py       IRQ ring + EventSource (timestamp-at-IRQ)
@@ -163,11 +163,11 @@ The hot paths use the speed-Python toolkit:
 
 ## Port matrix
 
-| Port            | Stdio |       Cdc       | Uart | Sync UART | Hard IRQ |
-| --------------- | :---: | :-------------: | :--: | :-------: | :------: |
-| RP2040 / RP2350 |  ✅   |  ✅ (MP ≥1.23)  |  ✅  |    ✅     |    ✅    |
-| ESP32-S2 / S3   |  ✅   | ⚠ port-specific |  ✅  |    ✅     |    ⚠     |
-| STM32 (Pyboard) |  ✅   |       n/a       |  ✅  |    ✅     |    ✅    |
+| Port            |       Cdc       | Uart | Sync UART | Hard IRQ |
+| --------------- | :-------------: | :--: | :-------: | :------: |
+| RP2040 / RP2350 |  ✅ (MP ≥1.23)  |  ✅  |    ✅     |    ✅    |
+| ESP32-S2 / S3   | ⚠ port-specific |  ✅  |    ✅     |    ⚠     |
+| STM32 (Pyboard) |       n/a       |  ✅  |    ✅     |    ✅    |
 
 ESP32 hard IRQs have stricter restrictions; `bind_pin_event` falls back
 to soft IRQ semantics if `hard=True` raises. UART IRQ semantics also

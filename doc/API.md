@@ -8,7 +8,7 @@ links into the source — every module has a top-of-file docstring.
 ```python
 from microharp import (
     HarpDevice,
-    StdioTransport, CdcTransport, UartTransport, StreamTransport,
+    CdcTransport, UartTransport, StreamTransport,
     Clock, EventSource,
     RegisterEntry, RegisterBank,
     PT_U8, PT_S8, PT_U16, PT_S16, PT_U32, PT_S32,
@@ -48,12 +48,13 @@ Passing `led_pin=None` skips the LED task.
 
 ### Register helpers
 
-| Helper                                                                     | Purpose                                           |
-| -------------------------------------------------------------------------- | ------------------------------------------------- |
-| `add_register(addr, type, *, n_elements, access, on_read, on_write, name)` | Create + add a `RegisterEntry`.                   |
-| `add_u8 / add_u16 / add_u32 / add_s16 / add_float`                         | Sugar for the common payload types.               |
-| `@on_read(addr, type)`                                                     | Decorator: declare/attach an async read handler.  |
-| `@on_write(addr, type)`                                                    | Decorator: declare/attach an async write handler. |
+| Helper                                                                     | Purpose                                            |
+| -------------------------------------------------------------------------- | -------------------------------------------------- |
+| `add_register(addr, type, *, n_elements, access, on_read, on_write, name)` | Create + add a `RegisterEntry`.                    |
+| `add_u8 / add_s8 / add_u16 / add_s16 / add_u32 / add_float`                | Sugar for the common payload types.                |
+| `@on_read(addr, type)`                                                     | Decorator: declare/attach an async read handler.   |
+| `@on_write(addr, type)`                                                    | Decorator: declare/attach an async write handler.  |
+| `set_name(name)`                                                           | Update the DeviceName register (≤ 24 ASCII chars). |
 
 Handler signatures:
 
@@ -68,22 +69,22 @@ async def writer(reg, payload_mv) -> int | None:
 
 ### Event helpers
 
-| Helper                                                       | Purpose                                                                               |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `add_event_source(addr, type, *, port, ring_size, pack)`     | Returns an `EventSource`; emit IRQ-safe with `.emit(word)`. Adds 1 always-on task.    |
-| `add_periodic_event(addr, type, period_ms, *, pack, port)`   | Auto-emit a register's value every `period_ms` (drift-corrected).                     |
-| `bind_pin_event(pin, *, address, payload_type, trigger, ...)`| GPIO IRQ → EVENT (ts at IRQ). `task=` / `sequence=` for press-driven task sequence.   |
-| `bind_event_register(addr, type, *, n_elements, name)`       | Create a R/O EVENT register; returns `await emit(value)` closure (no always-on task). |
-| `bind_state_register(addr, type, sequence, mapping, *, name)`| Create a R/W register whose written byte drives a `TaskSequence` via `mapping`.       |
-| `await emit(addr, payload, payload_type=None)`               | Push an ad-hoc EVENT. `payload` may be bytes-like, an int/float, or a list/tuple.     |
+| Helper                                                        | Purpose                                                                               |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `add_event_source(addr, type, *, port, ring_size, pack)`      | Returns an `EventSource`; emit IRQ-safe with `.emit(word)`. Adds 1 always-on task.    |
+| `add_periodic_event(addr, type, period_ms, *, pack, port)`    | Auto-emit a register's value every `period_ms` (drift-corrected).                     |
+| `bind_pin_event(pin, *, address, payload_type, trigger, ...)` | GPIO IRQ → EVENT (ts at IRQ). `task=` / `sequence=` for press-driven task sequence.   |
+| `bind_event_register(addr, type, *, n_elements, name)`        | Create a R/O EVENT register; returns `await emit(value)` closure (no always-on task). |
+| `bind_state_register(addr, type, sequence, mapping, *, name)` | Create a R/W register whose written byte drives a `TaskSequence` via `mapping`.       |
+| `await emit(addr, payload, payload_type=None)`                | Push an ad-hoc EVENT. `payload` may be bytes-like, an int/float, or a list/tuple.     |
 
 ### Task helpers
 
-| Helper                                                     | Purpose                                                                                |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `@task`                                                    | Register an extra coroutine for `asyncio.gather` set.                                  |
-| `add_task_sequence(states, *, guards, on_timeout)`         | N-state mutually-exclusive task sequence with per-state `wait_for` timeouts and gates. |
-| `await run()`                                              | Launch every core task + your event sources + your tasks.                              |
+| Helper                                             | Purpose                                                                                |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `@task` / `task(coro)`                             | Register an extra coroutine (no-arg async function or coroutine object) for `run()`.   |
+| `add_task_sequence(states, *, guards, on_timeout)` | N-state mutually-exclusive task sequence with per-state `wait_for` timeouts and gates. |
+| `await run()`                                      | Launch every core task + your event sources + your tasks.                              |
 
 ### Clock access
 

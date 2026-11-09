@@ -215,9 +215,10 @@ asyncio task.
 
 ## Rules of thumb
 
-- **Don't `print()`** if your transport is `StdioTransport` — it scribbles
-  into the Harp wire. Use `CdcTransport` for production, or accumulate
-  diagnostics into a register the host can read.
+- **Don't `print()` to the Harp port** — if you use `UartTransport` on
+  the same UART as the REPL, prints scribble into the Harp wire. With
+  `CdcTransport` prints go to the REPL CDC and are harmless; for
+  long-term diagnostics, prefer a register the host can read.
 - **`await asyncio.sleep_ms(0)`** to yield in CPU-heavy work — keeps the
   dispatcher and TX tasks responsive.
 - **For sub-millisecond timing** (kHz sensor sampling, encoder edges),

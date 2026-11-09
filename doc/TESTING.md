@@ -1,6 +1,6 @@
 # Testing
 
-CPython unit tests live in [`tests/`](tests/). They install small
+CPython unit tests live in [`test/test.py`](test/test.py). They install small
 `micropython`, `machine`, `time.ticks_*`, and `asyncio.ThreadSafeFlag`
 shims so the package imports cleanly under CPython.
 
