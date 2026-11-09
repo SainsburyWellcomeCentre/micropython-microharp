@@ -51,7 +51,15 @@ class Dispatcher:
 
     __slots__ = ("bank", "clock", "rx_q", "tx_q", "slabs", "default_port", "errors")
 
-    def __init__(self, bank: RegisterBank, clock: Clock, rx_queue: Queue, tx_queue: Queue, slab_pool: SlabPool, default_port: int = 255):
+    def __init__(
+        self,
+        bank: RegisterBank,
+        clock: Clock,
+        rx_queue: Queue,
+        tx_queue: Queue,
+        slab_pool: SlabPool,
+        default_port: int = 255,
+    ):
         self.bank = bank
         self.clock = clock
         self.rx_q = rx_queue
@@ -182,9 +190,7 @@ class Dispatcher:
             # Spec ordering: WRITE reply first, then DUMP messages (if any).
             if not muted:
                 await self._send_reg_reply(MSG_WRITE, reg, port, secs, ticks)
-            if (address == R_OPERATION_CONTROL
-                    and (reg.storage[0] & OP_DUMP)
-                    and not muted):
+            if address == R_OPERATION_CONTROL and (reg.storage[0] & OP_DUMP) and not muted:
                 await self._dump_all_registers(port)
                 reg.storage[0] = reg.storage[0] & ~OP_DUMP
 

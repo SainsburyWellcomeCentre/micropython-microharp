@@ -88,14 +88,14 @@ def payload_elem_size(payload_type: int) -> int:
 # sequence).  Allocations here are unavoidable for the convenience API; if
 # you need an alloc-free emit path, build the bytearray once and pass it.
 _PT_FMT = {
-    PT_U8:    "<B",
-    PT_S8:    "<b",
-    PT_U16:   "<H",
-    PT_S16:   "<h",
-    PT_U32:   "<I",
-    PT_S32:   "<i",
-    PT_U64:   "<Q",
-    PT_S64:   "<q",
+    PT_U8: "<B",
+    PT_S8: "<b",
+    PT_U16: "<H",
+    PT_S16: "<h",
+    PT_U32: "<I",
+    PT_S32: "<i",
+    PT_U64: "<Q",
+    PT_S64: "<q",
     PT_FLOAT: "<f",
 }
 
@@ -144,7 +144,15 @@ except (AttributeError, NameError, SyntaxError):
 
 @_native
 def encode_into(
-    buf: bytearray, msg_type: int, address: int, port: int, payload_type: int, payload=None, payload_len: int = 0, ts_seconds: int = None, ts_ticks: int = None
+    buf: bytearray,
+    msg_type: int,
+    address: int,
+    port: int,
+    payload_type: int,
+    payload=None,
+    payload_len: int = 0,
+    ts_seconds: int = None,
+    ts_ticks: int = None,
 ) -> int:
     """Write a Harp frame into `buf` starting at offset 0.
 

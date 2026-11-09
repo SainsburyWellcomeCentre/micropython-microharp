@@ -77,7 +77,7 @@ class SlabPool:
     def buf(self, idx: int):
         return self._slabs[idx]
 
-    def view(self, idx: int, length = None):
+    def view(self, idx: int, length=None):
         if length is None:
             length = self._lengths[idx]
         return memoryview(self._slabs[idx])[:length]
@@ -173,13 +173,14 @@ class CdcTransport(StreamTransport):
     pass
 
 
-
 # ---------------------------------------------------------------------------
 # RX task
 # ---------------------------------------------------------------------------
 
 
-async def usb_rx_task(transport: StreamTransport, decoder: FrameDecoder, rx_queue: Queue, slab_pool: SlabPool, *, chunk: int = 64):
+async def usb_rx_task(
+    transport: StreamTransport, decoder: FrameDecoder, rx_queue: Queue, slab_pool: SlabPool, *, chunk: int = 64
+):
     """Read raw bytes from `transport`, feed `decoder`, enqueue completed
     frames as slab indices onto `rx_queue`.
 

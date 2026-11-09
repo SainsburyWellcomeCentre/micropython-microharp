@@ -38,6 +38,7 @@ sources.  Application code becomes:
 
 import asyncio
 import time
+
 # from typing import Any, Callable, Coroutine
 
 try:
@@ -77,6 +78,7 @@ DEVICE_NAME_LEN = 25  # per spec; includes null terminator
 # to distinguish "this key is absent → no transition" from "this key maps to None →
 # transition to the idle state".  Module-private; users never see it.
 _NO_TRANSITION = object()
+
 
 class HarpDevice:
     """Assembles all components and runs them.
@@ -171,7 +173,15 @@ class HarpDevice:
     # ------------------------------------------------------------------
 
     def add_register(
-        self, address: int, payload_type: int, *, n_elements: int = 1, access: int = READ_WRITE, on_read=None, on_write=None, name: str = ""
+        self,
+        address: int,
+        payload_type: int,
+        *,
+        n_elements: int = 1,
+        access: int = READ_WRITE,
+        on_read=None,
+        on_write=None,
+        name: str = ""
     ):
         """Create and register a RegisterEntry; return it."""
         reg = RegisterEntry(address, payload_type, n_elements, access, on_read=on_read, on_write=on_write, name=name)
@@ -180,7 +190,7 @@ class HarpDevice:
 
     def set_name(self, name: str):
         """Set the device name (max 24 chars, null-padded to 25 bytes)."""
-        encoded = name.encode("ascii")[:DEVICE_NAME_LEN - 1]
+        encoded = name.encode("ascii")[: DEVICE_NAME_LEN - 1]
         padded = encoded + bytes(DEVICE_NAME_LEN - len(encoded))
         return tuple(padded)
 
@@ -199,6 +209,11 @@ class HarpDevice:
         from .framing import PT_U32
 
         return self.add_register(address, PT_U32, **kw)
+
+    def add_s8(self, address: int, **kw):
+        from .framing import PT_S8
+
+        return self.add_register(address, PT_S8, **kw)
 
     def add_s16(self, address: int, **kw):
         from .framing import PT_S16
@@ -271,8 +286,15 @@ class HarpDevice:
         # Pass `bank` so the source can self-gate on Active mode (Device.md
         # §Operation Mode: events MUST NOT be sent in Standby).
         src = EventSource(
-            address, payload_type, self.clock, self.tx_q, self.slabs,
-            port=port, ring_size=ring_size, pack=pack, bank=self.bank,
+            address,
+            payload_type,
+            self.clock,
+            self.tx_q,
+            self.slabs,
+            port=port,
+            ring_size=ring_size,
+            pack=pack,
+            bank=self.bank,
         )
         self._event_sources.append(src)
         return src
@@ -318,7 +340,21 @@ class HarpDevice:
         return src
 
     def bind_pin_event(
-        self, pin: Pin, *, address=None, payload_type=None, trigger: int, hard: bool = True, port: int = 255, name: str = "", on_read=None, on_irq=None, task=None, active_level: int = 0, sequence=None, level_state=None
+        self,
+        pin: Pin,
+        *,
+        address=None,
+        payload_type=None,
+        trigger: int,
+        hard: bool = True,
+        port: int = 255,
+        name: str = "",
+        on_read=None,
+        on_irq=None,
+        task=None,
+        active_level: int = 0,
+        sequence=None,
+        level_state=None
     ):
         """Wire a `machine.Pin` to a Harp register: read + event in one call.
 
@@ -414,16 +450,16 @@ class HarpDevice:
 
                 reg.on_read = _refresh
 
-            _emit = src.emit         # bound method, created once here
+            _emit = src.emit  # bound method, created once here
         else:
             src = None
-            _emit = None             # no event emission on this pin
+            _emit = None  # no event emission on this pin
 
         # Hard IRQ — every call goes through pre-bound default args so
         # the body performs no attribute lookups (and therefore no
         # bound-method allocation, which is fatal in hard IRQ context on
         # MicroPython builds without LOAD_METHOD optimization).
-        _pin_value  = pin.value      # bound method, created once here
+        _pin_value = pin.value  # bound method, created once here
 
         # If `task=` was given, build a `_task_hook(level)` that schedules
         # the create/cancel via micropython.schedule.  asyncio.create_task
@@ -446,11 +482,13 @@ class HarpDevice:
                 s = _ls.get(level, _nt)
                 if s is not _nt:
                     _l(s)
+
         elif task is not None:
             import micropython
+
             _factory = task
             _active = active_level
-            _state = [None]              # 1-cell mutable holder for the live Task
+            _state = [None]  # 1-cell mutable holder for the live Task
             _create_task = asyncio.create_task
 
             def _sequence_cb(level, _f=_factory, _a=_active, _st=_state, _ct=_create_task):
@@ -475,36 +513,49 @@ class HarpDevice:
         # Harp-event emission is skipped entirely.
         if _emit is not None:
             if on_irq is None and _task_hook is None:
+
                 def _irq_handler(p, _e=_emit, _v=_pin_value):
                     _e(_v())
+
             elif on_irq is not None and _task_hook is None:
+
                 def _irq_handler(p, _e=_emit, _v=_pin_value, _h=on_irq):
                     v = _v()
                     _e(v)
                     _h(v)
+
             elif on_irq is None and _task_hook is not None:
+
                 def _irq_handler(p, _e=_emit, _v=_pin_value, _h=_task_hook):
                     v = _v()
                     _e(v)
                     _h(v)
+
             else:
+
                 def _irq_handler(p, _e=_emit, _v=_pin_value, _h1=on_irq, _h2=_task_hook):
                     v = _v()
                     _e(v)
                     _h1(v)
                     _h2(v)
+
         else:
             # No event emission (address=None).  At least one of on_irq /
             # _task_hook must be present for the pin to do anything.
             if on_irq is None and _task_hook is None:
                 raise ValueError("address=None requires on_irq, task, or sequence")
             if on_irq is not None and _task_hook is None:
+
                 def _irq_handler(p, _v=_pin_value, _h=on_irq):
                     _h(_v())
+
             elif on_irq is None and _task_hook is not None:
+
                 def _irq_handler(p, _v=_pin_value, _h=_task_hook):
                     _h(_v())
+
             else:
+
                 def _irq_handler(p, _v=_pin_value, _h1=on_irq, _h2=_task_hook):
                     v = _v()
                     _h1(v)
@@ -545,13 +596,22 @@ class HarpDevice:
             buf_payload = payload
         else:
             from .framing import _pack_value
+
             buf_payload = _pack_value(payload, pt)
 
         secs, ticks = self.clock.now()
         idx = await self.slabs.lease()
         buf = self.slabs.buf(idx)
         n = encode_into(
-            buf, MSG_EVENT, address, 255, pt, payload=buf_payload, payload_len=len(buf_payload), ts_seconds=secs, ts_ticks=ticks
+            buf,
+            MSG_EVENT,
+            address,
+            255,
+            pt,
+            payload=buf_payload,
+            payload_len=len(buf_payload),
+            ts_seconds=secs,
+            ts_ticks=ticks,
         )
         self.slabs.set_length(idx, n)
         await self.tx_q.put(idx)
@@ -571,8 +631,11 @@ class HarpDevice:
         """
         if self.bank.get(address) is None:
             self.add_register(
-                address, payload_type, n_elements=n_elements,
-                access=READ_ONLY | EVENT, name=name,
+                address,
+                payload_type,
+                n_elements=n_elements,
+                access=READ_ONLY | EVENT,
+                name=name,
             )
 
         async def _emit(value, _self=self, _addr=address, _pt=payload_type):
@@ -622,6 +685,7 @@ class HarpDevice:
         See `microharp.events.TaskSequence` for full semantics.
         """
         from .events import TaskSequence
+
         return TaskSequence(states, guards=guards, on_timeout=on_timeout)
 
     def timestamp_now(self):

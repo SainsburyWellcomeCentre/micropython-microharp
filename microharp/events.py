@@ -27,6 +27,7 @@ import array
 from .framing import MSG_EVENT, encode_into
 from .clock import Clock, _ticks_us  # fast hardware-timer read on RP2
 from .registers import RegisterBank
+
 try:
     from asyncio import Queue  # available on CPython and MicroPython ≥1.20 with full asyncio
 except (ImportError, AttributeError):
@@ -74,7 +75,7 @@ class _IrqRing:
         head = self._head[0]
         tail = self._tail[0]
         mask = self._mask
-        nxt_pos = (head + 1) & 0xFFFF       # wrap counter (small-int safe)
+        nxt_pos = (head + 1) & 0xFFFF  # wrap counter (small-int safe)
         if (nxt_pos & mask) == (tail & mask):
             return False  # full; drop
         i = head & mask
@@ -129,13 +130,35 @@ class EventSource:
     payload.  Default: 1-byte U8 (low 8 bits).
     """
 
-    __slots__ = ("address", "port", "payload_type", "ring", "flag",
-                 "clock", "tx_q", "slabs", "_pack", "_op_reg",
-                 # Pre-bound callables for hard-IRQ paths (see emit()):
-                 "_ring_push", "_flag_set")
+    __slots__ = (
+        "address",
+        "port",
+        "payload_type",
+        "ring",
+        "flag",
+        "clock",
+        "tx_q",
+        "slabs",
+        "_pack",
+        "_op_reg",
+        # Pre-bound callables for hard-IRQ paths (see emit()):
+        "_ring_push",
+        "_flag_set",
+    )
 
-    def __init__(self, address: int, payload_type: int, clock: Clock, tx_queue: Queue, slab_pool: SlabPool,
-                 *, port: int = 255, ring_size: int = 16, pack=None, bank: RegisterBank):
+    def __init__(
+        self,
+        address: int,
+        payload_type: int,
+        clock: Clock,
+        tx_queue: Queue,
+        slab_pool: SlabPool,
+        *,
+        port: int = 255,
+        ring_size: int = 16,
+        pack=None,
+        bank: RegisterBank,
+    ):
         self.address = address
         self.port = port
         self.payload_type = payload_type
@@ -152,7 +175,7 @@ class EventSource:
         # the bound methods once here means the IRQ path is just direct
         # function calls.
         self._ring_push = self.ring.push_irq
-        self._flag_set  = self.flag.set
+        self._flag_set = self.flag.set
         # Optional reference to OperationControl for Active-mode gating —
         # Device.md §Operation Mode forbids events in Standby.  Set later
         # via `attach_bank()` if the bank wasn't available at init.
@@ -162,6 +185,7 @@ class EventSource:
 
     def attach_bank(self, bank: RegisterBank):
         from .registers import R_OPERATION_CONTROL
+
         self._op_reg = bank.get(R_OPERATION_CONTROL)
 
     # IRQ-side hook -------------------------------------------------------
@@ -314,9 +338,7 @@ class TaskSequence:
     uses to emit an error EVENT), then performs the reset.
     """
 
-    __slots__ = ("_states", "_guards", "_on_timeout",
-                 "_cur_state", "_cur_task",
-                 "_schedule", "_apply_bound")
+    __slots__ = ("_states", "_guards", "_on_timeout", "_cur_state", "_cur_task", "_schedule", "_apply_bound")
 
     def __init__(self, states, *, guards=None, on_timeout=None):
         norm = {}
@@ -326,14 +348,15 @@ class TaskSequence:
             elif callable(val):
                 norm[name] = (val, None)
             else:
-                norm[name] = val            # (factory, timeout_seconds)
-        self._states     = norm
-        self._guards     = guards if guards is not None else {}
+                norm[name] = val  # (factory, timeout_seconds)
+        self._states = norm
+        self._guards = guards if guards is not None else {}
         self._on_timeout = on_timeout
-        self._cur_state  = None
-        self._cur_task   = None
+        self._cur_state = None
+        self._cur_task = None
         import micropython
-        self._schedule    = micropython.schedule
+
+        self._schedule = micropython.schedule
         self._apply_bound = self._apply
 
     def __call__(self, state_name):
@@ -343,17 +366,17 @@ class TaskSequence:
     def _apply(self, state_name):
         g = self._guards.get(state_name)
         if g is not None and not g():
-            return                          # gated — silently dropped
+            return  # gated — silently dropped
         if self._cur_state == state_name:
-            return                          # dedupe same-state triggers
+            return  # dedupe same-state triggers
         cur = self._cur_task
         if cur is not None and not cur.done():
             cur.cancel()
         self._cur_state = state_name
-        self._cur_task  = None
+        self._cur_task = None
         cfg = self._states.get(state_name)
         if cfg is None:
-            return                          # unknown / passive state
+            return  # unknown / passive state
         factory, timeout_s = cfg
         if factory is None:
             return
@@ -369,9 +392,9 @@ class TaskSequence:
             if self._on_timeout is not None:
                 await self._on_timeout(name)
         except asyncio.CancelledError:
-            raise                           # _apply already cleaned up
+            raise  # _apply already cleaned up
         # Natural completion or post-timeout cleanup: reset only if we're
         # still the active state (a transition may have already moved on).
         if self._cur_state == name:
             self._cur_state = None
-            self._cur_task  = None
+            self._cur_task = None

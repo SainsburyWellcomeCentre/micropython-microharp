@@ -2,3 +2,5 @@
 .micropico
 .claude
 test.py
+lib/
+typings/

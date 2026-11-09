@@ -21,6 +21,7 @@ import struct
 
 from .framing import MSG_EVENT, encode_into, PT_U32
 from .clock import Clock
+
 try:
     from asyncio import Queue  # available on CPython and MicroPython ≥1.20 with full asyncio
 except (ImportError, AttributeError):
@@ -40,7 +41,7 @@ from .registers import (
 async def heartbeat_task(clock: Clock, bank: RegisterBank, tx_queue: Queue, slab_pool: SlabPool, *, port: int = 255):
     """Emit a 1 Hz status EVENT when enabled and OP_MODE == Active."""
     tick_ev = clock.tick.subscribe()
-    op_reg  = bank.get(R_OPERATION_CONTROL)
+    op_reg = bank.get(R_OPERATION_CONTROL)
 
     # Pre-allocated payload buffers reused across emissions.
     pl_u32 = bytearray(4)
@@ -64,7 +65,7 @@ async def heartbeat_task(clock: Clock, bank: RegisterBank, tx_queue: Queue, slab
         # snapshot is captured at the actual second boundary, so the
         # outgoing TS has µs-level precision when synced and ~poll_ms
         # precision otherwise, regardless of how late this task wakes.
-        secs  = clock._tick_secs[0]
+        secs = clock._tick_secs[0]
         ticks = 0
         # secs, ticks = clock.now()
 
@@ -72,9 +73,17 @@ async def heartbeat_task(clock: Clock, bank: RegisterBank, tx_queue: Queue, slab
             struct.pack_into("<I", pl_u32, 0, secs & 0xFFFFFFFF)
             idx = await slab_pool.lease()
             buf = slab_pool.buf(idx)
-            n = encode_into(buf, MSG_EVENT, R_TIMESTAMP_SECOND, port, PT_U32,
-                            payload=pl_u32, payload_len=4,
-                            ts_seconds=secs, ts_ticks=ticks)
+            n = encode_into(
+                buf,
+                MSG_EVENT,
+                R_TIMESTAMP_SECOND,
+                port,
+                PT_U32,
+                payload=pl_u32,
+                payload_len=4,
+                ts_seconds=secs,
+                ts_ticks=ticks,
+            )
             slab_pool.set_length(idx, n)
             await tx_queue.put(idx)
 
@@ -83,8 +92,16 @@ async def heartbeat_task(clock: Clock, bank: RegisterBank, tx_queue: Queue, slab
             struct.pack_into("<I", pl_u32, 0, secs & 0xFFFFFFFF)
             idx = await slab_pool.lease()
             buf = slab_pool.buf(idx)
-            n = encode_into(buf, MSG_EVENT, R_TIMESTAMP_SECOND, port, PT_U32,
-                            payload=pl_u32, payload_len=4,
-                            ts_seconds=secs, ts_ticks=ticks)
+            n = encode_into(
+                buf,
+                MSG_EVENT,
+                R_TIMESTAMP_SECOND,
+                port,
+                PT_U32,
+                payload=pl_u32,
+                payload_len=4,
+                ts_seconds=secs,
+                ts_ticks=ticks,
+            )
             slab_pool.set_length(idx, n)
             await tx_queue.put(idx)

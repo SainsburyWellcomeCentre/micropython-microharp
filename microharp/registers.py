@@ -46,7 +46,16 @@ class RegisterEntry:
         "name",
     )
 
-    def __init__(self, address: int, payload_type: int, n_elements: int = 1, access: int = READ_WRITE, on_read=None, on_write=None, name: str = ""):
+    def __init__(
+        self,
+        address: int,
+        payload_type: int,
+        n_elements: int = 1,
+        access: int = READ_WRITE,
+        on_read=None,
+        on_write=None,
+        name: str = "",
+    ):
         self.address = address
         self.payload_type = payload_type
         self.n_elements = n_elements
@@ -115,17 +124,17 @@ R_HEARTBEAT = const(0x12)  # U16
 R_VERSION = const(0x13)  # U8
 
 # OperationControl bits — per Harp Device.md §R_OPERATION_CTRL.
-OP_OP_MODE_MASK     = const(0x03)   # bits 0-1
-OP_OP_MODE_STANDBY  = const(0x00)
-OP_OP_MODE_ACTIVE   = const(0x01)
+OP_OP_MODE_MASK = const(0x03)  # bits 0-1
+OP_OP_MODE_STANDBY = const(0x00)
+OP_OP_MODE_ACTIVE = const(0x01)
 OP_OP_MODE_RESERVED = const(0x02)
-OP_OP_MODE_SPEED    = const(0x03)   # deprecated
-OP_HEARTBEAT_EN     = const(0x04)   # bit 2: emit R_HEARTBEAT events @ 1 Hz
-OP_DUMP             = const(0x08)   # bit 3: enumerate registers (write-only)
-OP_MUTE_REPLIES     = const(0x10)   # bit 4: suppress ALL replies
-OP_VISUAL_EN        = const(0x20)   # bit 5: enable visual indicators
-OP_OPLED_EN         = const(0x40)   # bit 6: LED tracks op-mode
-OP_ALIVE_EN         = const(0x80)   # bit 7: emit R_TIMESTAMP_SECOND (deprecated)
+OP_OP_MODE_SPEED = const(0x03)  # deprecated
+OP_HEARTBEAT_EN = const(0x04)  # bit 2: emit R_HEARTBEAT events @ 1 Hz
+OP_DUMP = const(0x08)  # bit 3: enumerate registers (write-only)
+OP_MUTE_REPLIES = const(0x10)  # bit 4: suppress ALL replies
+OP_VISUAL_EN = const(0x20)  # bit 5: enable visual indicators
+OP_OPLED_EN = const(0x40)  # bit 6: LED tracks op-mode
+OP_ALIVE_EN = const(0x80)  # bit 7: emit R_TIMESTAMP_SECOND (deprecated)
 
 # Default OperationControl per spec (§R_OPERATION_CTRL diagram):
 #   ALIVE_EN | OPLED_EN | VISUAL_EN | HEARTBEAT_EN, OP_MODE=Standby = 0xE4.
@@ -206,8 +215,9 @@ def install_common_registers(
         struct.pack_into("<I", reg.storage, 0, new & 0xFFFFFFFF)
         return None
 
-    _add(R_TIMESTAMP_SECOND, PT_U32, access=READ_WRITE,
-         name="TimestampSecond", on_read=_read_secs, on_write=_write_secs)
+    _add(
+        R_TIMESTAMP_SECOND, PT_U32, access=READ_WRITE, name="TimestampSecond", on_read=_read_secs, on_write=_write_secs
+    )
     _add(R_TIMESTAMP_MICRO, PT_U16, access=READ_ONLY, name="TimestampTicks", on_read=_read_ticks)
 
     # OperationControl: spec default 0xE4 = ALIVE_EN | OPLED_EN |
@@ -264,7 +274,7 @@ def install_common_registers(
     # Newer common registers (Harp Device 1.13+).
     _add(R_TIMESTAMP_OFFSET, PT_U8, access=READ_ONLY, name="TimestampOffset")
     bank.add(RegisterEntry(R_UID, PT_U8, n_elements=16, access=READ_ONLY, name="UID"))
-    bank.add(RegisterEntry(R_TAG, PT_U8, n_elements=8,  access=READ_ONLY, name="Tag"))
+    bank.add(RegisterEntry(R_TAG, PT_U8, n_elements=8, access=READ_ONLY, name="Tag"))
 
     # R_HEARTBEAT: U16, read-only.  Bits 0=IS_ACTIVE, 1=IS_SYNCHRONIZED.
     # Refresh just-in-time on every read so the host always sees current
@@ -276,8 +286,7 @@ def install_common_registers(
         v = (1 if is_active else 0) | (2 if is_synced else 0)
         struct.pack_into("<H", reg.storage, 0, v)
 
-    _add(R_HEARTBEAT, PT_U16, access=READ_ONLY, name="Heartbeat",
-         on_read=_read_hb)
+    _add(R_HEARTBEAT, PT_U16, access=READ_ONLY, name="Heartbeat", on_read=_read_hb)
 
     # R_VERSION: 32-byte U8 array per spec §R_VERSION.  Layout:
     #   [0..2]  PROTOCOL  (semver: major, minor, patch)
@@ -285,8 +294,7 @@ def install_common_registers(
     #   [6..8]  HARDWARE  (semver)
     #   [9..11] CORE_ID   (3 chars)
     #   [12..31] INTERFACE_HASH (SHA-1 of device.yml; little-endian; 0 = unset)
-    rv = bank.add(RegisterEntry(R_VERSION, PT_U8, n_elements=32,
-                                access=READ_ONLY, name="Version"))
+    rv = bank.add(RegisterEntry(R_VERSION, PT_U8, n_elements=32, access=READ_ONLY, name="Version"))
     rv.storage[3] = fw_major
     rv.storage[4] = fw_minor
     rv.storage[6] = hw_major

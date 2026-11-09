@@ -29,6 +29,7 @@ import asyncio
 import sys
 import time
 import struct
+
 # from typing import Any, Callable, Awaitable
 
 if "ptr32" not in globals():
@@ -64,16 +65,20 @@ _RP2040 = sys.platform == "rp2" and not _RP2350
 
 if _RP2040:
     try:
+
         @micropython.viper
         def _ticks_us() -> int:
             return int(ptr32(0x40054028)[0]) & 0x3FFFFFFF
+
     except (AttributeError, NameError, SyntaxError):
         _ticks_us = time.ticks_us
 elif _RP2350:
     try:
+
         @micropython.viper
         def _ticks_us() -> int:
             return int(ptr32(0x400B0028)[0]) & 0x3FFFFFFF
+
     except (AttributeError, NameError, SyntaxError):
         _ticks_us = time.ticks_us
 else:
@@ -85,6 +90,16 @@ TICKS_PER_SECOND = const(31250)
 
 _SYNC_B0 = const(0xAA)
 _SYNC_B1 = const(0xAF)
+
+
+def _decode_sync_seconds(buf):
+    """Decode a 6-byte Harp sync packet's little-endian U32 seconds field.
+
+    Packet layout is: 0xAA 0xAF [seconds:U32 little-endian].  The 32-bit
+    value begins immediately after the two-byte sync header.
+    """
+    return buf[2] | (buf[3] << 8) | (buf[4] << 16) | (buf[5] << 24)
+
 
 # Per the Harp Sync Clock spec, the *last* byte of the 6-byte packet is
 # transmitted exactly 672 µs before the next whole-second boundary at
@@ -191,13 +206,19 @@ class Clock:
         # the Python-level cost here is the arithmetic and tuple return.
         # Replacing divmod with two ops avoids one bytecode and one
         # tuple-unpack on the hot fast-path branch.
+        #
+        # Advance the epoch by whole elapsed seconds so (now - _epoch_us)
+        # always stays < 1 s.  Without this, ticks_diff() wraps negative
+        # once the anchor is > 2**29 us (~536.9 s) old.
         delta_us = time.ticks_diff(_ticks_us(), self._epoch_us)
         if delta_us < 0:
             delta_us = 0
         if delta_us >= 1_000_000:
             extra = delta_us // 1_000_000
-            rem = delta_us - extra * 1_000_000
-            return (self._seconds + extra) & 0xFFFFFFFF, rem // US_PER_TICK
+            step = extra * 1_000_000
+            self._seconds = (self._seconds + extra) & 0xFFFFFFFF
+            self._epoch_us = time.ticks_add(self._epoch_us, step)
+            delta_us -= step
         return self._seconds, delta_us // US_PER_TICK
 
     # -- IRQ-side hook -------------------------------------------------------
@@ -224,8 +245,7 @@ class Clock:
 
     # -- Sync-task side ------------------------------------------------------
 
-    def apply_sync(self, t_first_byte_us: int, encoded_seconds: int, *,
-                   latency_us: int = 0):
+    def apply_sync(self, t_first_byte_us: int, encoded_seconds: int, *, latency_us: int = 0):
         """Discipline the clock to a freshly-arrived sync packet.
 
         `t_first_byte_us` was captured by the IRQ at first-byte arrival
@@ -235,8 +255,7 @@ class Clock:
         delay between physical byte arrival and IRQ entry.
         """
         self._seconds = encoded_seconds & 0xFFFFFFFF
-        self._epoch_us = time.ticks_add(t_first_byte_us,
-                                        -(SYNC_OFFSET_US + latency_us))
+        self._epoch_us = time.ticks_add(t_first_byte_us, -(SYNC_OFFSET_US + latency_us))
         self._last_sync_us = _ticks_us()
         if not self._synced:
             self._synced = True
@@ -251,7 +270,7 @@ class Clock:
         self._tick_secs[0] = self._seconds
         self.tick.fire()
 
-    def set_seconds(self, seconds: int, *, anchor_us = None, latency_us: int = 0):
+    def set_seconds(self, seconds: int, *, anchor_us=None, latency_us: int = 0):
         """Re-anchor the clock so that at `anchor_us` (default: now), the
         seconds counter equals `seconds`.  Used by writes to the
         TimestampSecond register.  `latency_us` lets you compensate for
@@ -321,13 +340,12 @@ async def sync_task(uart, clock: Clock, *, baudrate: int = 100_000):
             # body performs no attribute lookups — protects against
             # bound-method allocation on MicroPython builds without the
             # LOAD_METHOD optimization (fatal in hard IRQ).
-            _buf      = clock._irq_buf
-            _ticks    = _ticks_us
-            _add      = time.ticks_add
+            _buf = clock._irq_buf
+            _ticks = _ticks_us
+            _add = time.ticks_add
             _flag_set = clock.sync_flag.set
 
-            def _idle_irq(u, _b=_buf, _t=_ticks, _a=_add,
-                          _pus=packet_us, _s=_flag_set):
+            def _idle_irq(u, _b=_buf, _t=_ticks, _a=_add, _pus=packet_us, _s=_flag_set):
                 # End-of-burst → back-date to start of first byte.  Mask
                 # is 0xFFFF (small-int safe, no IRQ allocation).
                 _b[0] = _a(_t(), -_pus)
@@ -379,7 +397,7 @@ async def sync_task(uart, clock: Clock, *, baudrate: int = 100_000):
                 if n:
                     got += n
                 else:
-                    break  
+                    break
             if got < 6:
                 continue
         elif sreader_readinto is not None:
@@ -402,7 +420,7 @@ async def sync_task(uart, clock: Clock, *, baudrate: int = 100_000):
         #         uart.read(1)
         #     continue
 
-        secs = buf[3] | (buf[4] << 8) | (buf[5] << 16) | (buf[0] << 24)
+        secs = _decode_sync_seconds(buf)
 
         clock.apply_sync(t_first, secs, latency_us=1160)
 
@@ -414,6 +432,7 @@ async def sync_task(uart, clock: Clock, *, baudrate: int = 100_000):
 # when no sync master is attached (Device.md §R_OPERATION_CTRL says
 # HEARTBEAT_EN MUST emit every second).
 # ---------------------------------------------------------------------------
+
 
 async def second_ticker(clock: Clock, *, poll_ms: int = 20):
     """Watch `clock.now()[0]` for changes; fire `clock.tick` on each new
