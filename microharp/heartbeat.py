@@ -1,25 +1,26 @@
 """Heartbeat task — periodic 1 Hz status EVENT.
 
-Per Device.md §R_OPERATION_CTRL the device must emit one of two events
-every second, gated by OperationControl bits:
+Per Device.md §R_OPERATION_CTRL / §R_HEARTBEAT the device emits one
+event every second while in Active mode, gated by OperationControl bits:
 
-    * HEARTBEAT_EN (bit 2) set → emit R_TIMESTAMP_SECOND (U32).
+    * HEARTBEAT_EN (bit 2) set → emit R_HEARTBEAT (U16:
+      bit 0 IS_SYNCHRONIZED, bit 1 IS_ACTIVE).  Takes precedence over
+      ALIVE_EN when both are set.
     * ALIVE_EN (bit 7, deprecated) set, HEARTBEAT_EN clear → emit
-        R_TIMESTAMP_SECOND (U32).
-    * Both set → still emit R_TIMESTAMP_SECOND.
-  * Both clear → silent.
+      R_TIMESTAMP_SECOND (U32).
+    * Both clear → silent.
 
 Events MUST NOT be sent in Standby mode (Device.md §Operation Mode), so
 this task additionally gates on OP_MODE == Active.
 
 Wake source is `clock.tick`, the same per-second broadcaster the LED
 uses, so heartbeat phase and LED toggle are co-aligned.  Allocation-free
-in steady state: the payload buffer and bound methods are cached.
+in steady state: the payload buffers are cached.
 """
 
 import struct
 
-from .framing import MSG_EVENT, encode_into, PT_U32
+from .framing import MSG_EVENT, encode_into, PT_U16, PT_U32
 from .clock import Clock
 
 try:
@@ -29,11 +30,14 @@ except (ImportError, AttributeError):
 from .transport import SlabPool
 from .registers import (
     R_TIMESTAMP_SECOND,
+    R_HEARTBEAT,
     R_OPERATION_CONTROL,
     OP_HEARTBEAT_EN,
     OP_ALIVE_EN,
     OP_OP_MODE_MASK,
     OP_OP_MODE_ACTIVE,
+    HB_IS_ACTIVE,
+    HB_IS_SYNCHRONIZED,
     RegisterBank,
 )
 
@@ -42,8 +46,10 @@ async def heartbeat_task(clock: Clock, bank: RegisterBank, tx_queue: Queue, slab
     """Emit a 1 Hz status EVENT when enabled and OP_MODE == Active."""
     tick_ev = clock.tick.subscribe()
     op_reg = bank.get(R_OPERATION_CONTROL)
+    hb_reg = bank.get(R_HEARTBEAT)
 
     # Pre-allocated payload buffers reused across emissions.
+    pl_u16 = bytearray(2)
     pl_u32 = bytearray(4)
 
     while True:
@@ -67,41 +73,38 @@ async def heartbeat_task(clock: Clock, bank: RegisterBank, tx_queue: Queue, slab
         # precision otherwise, regardless of how late this task wakes.
         secs = clock._tick_secs[0]
         ticks = 0
-        # secs, ticks = clock.now()
 
         if op_val & OP_HEARTBEAT_EN:
-            struct.pack_into("<I", pl_u32, 0, secs & 0xFFFFFFFF)
-            idx = await slab_pool.lease()
-            buf = slab_pool.buf(idx)
-            n = encode_into(
-                buf,
-                MSG_EVENT,
-                R_TIMESTAMP_SECOND,
-                port,
-                PT_U32,
-                payload=pl_u32,
-                payload_len=4,
-                ts_seconds=secs,
-                ts_ticks=ticks,
-            )
-            slab_pool.set_length(idx, n)
-            await tx_queue.put(idx)
-
+            # Only reached in Active mode, so IS_ACTIVE is always set.
+            hb = HB_IS_ACTIVE | (HB_IS_SYNCHRONIZED if clock.synced else 0)
+            struct.pack_into("<H", pl_u16, 0, hb)
+            if hb_reg is not None:
+                hb_reg.storage[:] = pl_u16
+            # Separate assignments: a 4-way tuple unpack allocates on MicroPython.
+            address = R_HEARTBEAT
+            pt = PT_U16
+            payload = pl_u16
         elif op_val & OP_ALIVE_EN:
             # Deprecated path: emit R_TIMESTAMP_SECOND.
             struct.pack_into("<I", pl_u32, 0, secs & 0xFFFFFFFF)
-            idx = await slab_pool.lease()
-            buf = slab_pool.buf(idx)
-            n = encode_into(
-                buf,
-                MSG_EVENT,
-                R_TIMESTAMP_SECOND,
-                port,
-                PT_U32,
-                payload=pl_u32,
-                payload_len=4,
-                ts_seconds=secs,
-                ts_ticks=ticks,
-            )
-            slab_pool.set_length(idx, n)
-            await tx_queue.put(idx)
+            address = R_TIMESTAMP_SECOND
+            pt = PT_U32
+            payload = pl_u32
+        else:
+            continue
+
+        idx = await slab_pool.lease()
+        buf = slab_pool.buf(idx)
+        n = encode_into(
+            buf,
+            MSG_EVENT,
+            address,
+            port,
+            pt,
+            payload=payload,
+            payload_len=len(payload),
+            ts_seconds=secs,
+            ts_ticks=ticks,
+        )
+        slab_pool.set_length(idx, n)
+        await tx_queue.put(idx)

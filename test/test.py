@@ -606,6 +606,229 @@ check(tx_q3.qsize() == 0, "Standby mode → event dropped (no emit)")
 
 
 # ===========================================================================
+# Core registers — spec semantics (OPERATION_CTRL, RESET_DEV, DEVICE_NAME,
+# CLOCK_CONFIG, UID, TAG, HEARTBEAT, VERSION) + NVM
+# ===========================================================================
+print("Testing: Core register semantics")
+import tempfile
+from microharp.registers import (
+    R_DEVICE_NAME,
+    R_CLOCK_CONFIG,
+    R_UID,
+    R_TAG,
+    RST_DEF,
+    RST_EE,
+    RST_SAVE,
+    RST_NAME_TO_DEFAULT,
+    RST_BOOT_DEF,
+    RST_BOOT_EE,
+    CLK_LOCK,
+    CLK_UNLOCK,
+    CLK_GEN,
+    HB_IS_ACTIVE,
+    HB_IS_SYNCHRONIZED,
+    NONVOLATILE,
+)
+from microharp.nvm import Nvm, apply_boot_state
+from microharp.heartbeat import heartbeat_task
+
+
+def make_core(nvm=None, **kw):
+    """Fresh bank + dispatcher.  Returns (bank, disp, slabs, tx_q, clock, reboots)."""
+    c = Clock()
+    b = RegisterBank()
+    s = SlabPool(count=64, size=64)
+    tq = asyncio.Queue(64)
+    reboots = []
+    install_common_registers(b, clock=c, tx_q=tq, slab_pool=s, nvm=nvm, reboot=lambda: reboots.append(1), **kw)
+    d = Dispatcher(b, c, asyncio.Queue(4), tq, s)  # type: ignore[arg-type]
+    return b, d, s, tq, c, reboots
+
+
+def drain(s, tq):
+    """Pop every queued frame → list of (msg_type, address, payload bytes)."""
+    out = []
+    while tq.qsize():
+        idx = tq.get_nowait()
+        mv = memoryview(s.buf(idx))[: s.length(idx)]
+        mt, addr, _, _, _, _, _, po, pl = parse_header(mv)
+        out.append((mt, addr, bytes(mv[po : po + pl])))
+        s.release(idx)
+    return out
+
+
+async def _request(d, s, tq, msg, addr, pt, payload):
+    buf = bytearray(64)
+    n = encode_into(buf, msg, addr, 255, pt, payload=payload, payload_len=len(payload) if payload else 0)
+    idx = await s.lease()
+    s.buf(idx)[:n] = buf[:n]
+    await d._handle_one(s.buf(idx), n)
+    s.release(idx)
+    # Play the TX task: deferred reboots wait for the reply to drain.
+    out = drain(s, tq)
+    await asyncio.sleep(0.12)
+    return out
+
+
+def request(core, msg, addr, pt, payload=None):
+    b, d, s, tq, _, _ = core
+    return run(_request(d, s, tq, msg, addr, pt, payload))
+
+
+W_ERR = MSG_WRITE | MSG_FLAG_ERROR
+R_ERR = MSG_READ | MSG_FLAG_ERROR
+
+# ---- OPERATION_CTRL ---------------------------------------------------------
+core = make_core()
+bk = core[0]
+opr = bk.get(R_OPERATION_CONTROL)
+assert opr is not None
+for bad_mode in (2, 3):
+    r = request(core, MSG_WRITE, R_OPERATION_CONTROL, PT_U8, bytes([OP_DEFAULT | bad_mode]))
+    check(r and r[0][0] == W_ERR, "OP_MODE=%d → WRITE error" % bad_mode)
+    check(opr.storage[0] == OP_DEFAULT, "OP_MODE=%d → register unchanged" % bad_mode)
+
+r = request(core, MSG_WRITE, R_OPERATION_CONTROL, PT_U8, bytes([OP_DEFAULT | OP_DUMP]))
+op_reads = [p for (mt, a, p) in r if mt == MSG_READ and a == R_OPERATION_CONTROL]
+check(r[0][0] == MSG_WRITE, "DUMP → WRITE reply first")
+check(len(op_reads) == 1 and not (op_reads[0][0] & OP_DUMP), "DUMP → dumped OperationControl has DUMP clear")
+check(any(a == R_RESET_DEV for (_, a, _) in r), "DUMP includes R_RESET_DEV (now readable)")
+
+opr.storage[0] |= OP_MUTE_REPLIES
+r = request(core, MSG_WRITE, R_OPERATION_CONTROL, PT_U8, bytes([OP_DEFAULT | OP_DUMP | OP_MUTE_REPLIES]))
+check(r == [], "DUMP while muted → nothing sent")
+check(not (opr.storage[0] & OP_DUMP), "DUMP while muted → bit still cleared")
+opr.storage[0] = OP_DEFAULT
+
+# ---- CLOCK_CONFIG -------------------------------------------------------------
+cc = bk.get(R_CLOCK_CONFIG)
+assert cc is not None
+check(cc.storage[0] == CLK_UNLOCK, "ClockConfig boots unlocked (0x40)")
+r = request(core, MSG_WRITE, R_CLOCK_CONFIG, PT_U8, bytes([CLK_LOCK]))
+check(r[0] == (MSG_WRITE, R_CLOCK_CONFIG, bytes([CLK_LOCK])), "LOCK → reply shows CLK_LOCK only")
+r = request(core, MSG_WRITE, R_TIMESTAMP_SECOND, PT_U32, struct.pack("<I", 1234))
+check(r[0][0] == W_ERR, "TimestampSecond write while locked → error")
+check(core[4].now()[0] != 1234, "TimestampSecond write while locked → clock untouched")
+r = request(core, MSG_WRITE, R_CLOCK_CONFIG, PT_U8, bytes([CLK_UNLOCK | CLK_GEN]))
+check(r[0][2] == bytes([CLK_UNLOCK]), "UNLOCK|CLK_GEN → unlocked, CLK_GEN ignored (no clock output)")
+r = request(core, MSG_WRITE, R_TIMESTAMP_SECOND, PT_U32, struct.pack("<I", 1234))
+check(r[0][0] == MSG_WRITE and core[4].now()[0] == 1234, "TimestampSecond write while unlocked → applied")
+r = request(core, MSG_WRITE, R_CLOCK_CONFIG, PT_U8, bytes([CLK_LOCK | CLK_UNLOCK]))
+check(r[0][0] == W_ERR, "LOCK|UNLOCK together → error")
+
+# ---- RESET_DEV without NVM ----------------------------------------------------
+r = request(core, MSG_READ, R_RESET_DEV, PT_U8)
+check(r[0] == (MSG_READ, R_RESET_DEV, bytes([RST_BOOT_DEF])), "ResetDev READ → BOOT_DEF (no NVM)")
+for bad in (RST_BOOT_DEF, RST_BOOT_EE, 0x10, RST_DEF | RST_SAVE, RST_SAVE, RST_EE):
+    r = request(core, MSG_WRITE, R_RESET_DEV, PT_U8, bytes([bad]))
+    check(r[0][0] == W_ERR, "ResetDev write 0x%02X without NVM → error" % bad)
+check(core[5] == [], "no reboot after rejected ResetDev writes")
+r = request(core, MSG_WRITE, R_RESET_DEV, PT_U8, bytes([RST_DEF]))
+check(r[0][0] == MSG_WRITE, "RST_DEF → WRITE reply")
+check(core[5] == [1], "RST_DEF → reboot after reply")
+
+# ---- DEVICE_NAME without NVM --------------------------------------------------
+core = make_core(device_name=b"default")
+dn_payload = b"renamed".ljust(25, b"\x00")
+r = request(core, MSG_WRITE, R_DEVICE_NAME, PT_U8, dn_payload)
+check(r[0][0] == MSG_WRITE and r[0][2].rstrip(b"\x00") == b"default", "DeviceName write w/o NVM → reply with default")
+check(core[5] == [], "DeviceName write w/o NVM → no reboot")
+
+# ---- UID / TAG / VERSION ------------------------------------------------------
+core = make_core(
+    uid=b"\x01\x02\x03",
+    tag=b"abc1234",
+    fw_major=2,
+    fw_minor=3,
+    fw_patch=4,
+    hw_patch=7,
+    harp_patch=1,
+    core_id=b"MPY",
+    interface_hash=bytes(range(20)),
+)
+bk = core[0]
+check(bytes(bk.get(R_UID).storage) == b"\x01\x02\x03" + bytes(13), "UID zero-padded to 16 bytes")  # type: ignore[union-attr]
+check(bytes(bk.get(R_TAG).storage) == b"abc1234\x00", "TAG zero-padded to 8 bytes")  # type: ignore[union-attr]
+v = bytes(bk.get(R_VERSION).storage)  # type: ignore[union-attr]
+check(v[0:9] == bytes((1, 13, 1, 2, 3, 4, 1, 0, 7)), "VERSION protocol/firmware/hardware semver")
+check(v[9:12] == b"MPY", "VERSION CORE_ID")
+check(v[12:32] == bytes(range(20)), "VERSION INTERFACE_HASH")
+try:
+    make_core(tag=b"123456789")
+    check(False, "TAG longer than 8 bytes raises")
+except ValueError:
+    check(True, "TAG longer than 8 bytes raises")
+
+# ---- HEARTBEAT ----------------------------------------------------------------
+core = make_core()
+bk, clkh = core[0], core[4]
+r = request(core, MSG_READ, R_HEARTBEAT, PT_U16)
+check(r[0][2] == b"\x00\x00", "Heartbeat in Standby, unsynced → 0")
+bk.get(R_OPERATION_CONTROL).storage[0] = OP_DEFAULT | OP_OP_MODE_ACTIVE  # type: ignore[union-attr]
+clkh._synced = True
+r = request(core, MSG_READ, R_HEARTBEAT, PT_U16)
+check(
+    struct.unpack("<H", r[0][2])[0] == HB_IS_ACTIVE | HB_IS_SYNCHRONIZED,
+    "Heartbeat Active+synced → IS_ACTIVE(bit1)|IS_SYNCHRONIZED(bit0)",
+)
+check(HB_IS_SYNCHRONIZED == 0x01 and HB_IS_ACTIVE == 0x02, "Heartbeat bit positions per spec")
+
+
+async def one_heartbeat(c, b, tq, s):
+    t = asyncio.ensure_future(heartbeat_task(c, b, tq, s))
+    await asyncio.sleep(0)
+    c.tick.fire()
+    await asyncio.sleep(0.01)
+    t.cancel()
+
+
+clkh._synced = False
+run(one_heartbeat(clkh, bk, core[3], core[2]))
+r = drain(core[2], core[3])
+check(r == [(MSG_EVENT, R_HEARTBEAT, struct.pack("<H", HB_IS_ACTIVE))], "HEARTBEAT_EN → R_HEARTBEAT EVENT")
+
+# ---- NVM ----------------------------------------------------------------------
+tmpdir = tempfile.mkdtemp()
+nvm = Nvm(os.path.join(tmpdir, "nvm.bin"))
+core = make_core(nvm=nvm, device_name=b"default")
+bk = core[0]
+bk.add(RegisterEntry(40, PT_U16, access=READ_WRITE | NONVOLATILE, name="Gain"))
+bk.add(RegisterEntry(41, PT_U8, access=READ_WRITE, name="Volatile"))
+check(apply_boot_state(bk, nvm) is False, "no NVM image → defaults")
+check(bk.get(R_RESET_DEV).storage[0] == RST_BOOT_DEF, "no NVM image → BOOT_DEF")  # type: ignore[union-attr]
+
+r = request(core, MSG_WRITE, R_DEVICE_NAME, PT_U8, b"bench-3".ljust(25, b"\x00"))
+check(r[0][2].rstrip(b"\x00") == b"bench-3", "DeviceName write w/ NVM → reply with new name")
+check(nvm.read() == {R_DEVICE_NAME: b"bench-3".ljust(25, b"\x00")}, "DeviceName write w/ NVM → persisted")
+check(core[5] == [1], "DeviceName write w/ NVM → reboot after reply")
+
+bk.get(40).storage[:] = b"\x34\x12"  # type: ignore[union-attr]
+bk.get(41).storage[0] = 9  # type: ignore[union-attr]
+r = request(core, MSG_WRITE, R_RESET_DEV, PT_U8, bytes([RST_SAVE]))
+check(r[0][0] == MSG_WRITE and core[5] == [1, 1], "SAVE w/ NVM → reply + reboot")
+check(set(nvm.read()) == {R_DEVICE_NAME, 40}, "SAVE stores only NONVOLATILE registers")  # type: ignore[arg-type]
+
+# "Reboot": fresh bank restores the saved values.
+core2 = make_core(nvm=nvm, device_name=b"default")
+bk2 = core2[0]
+bk2.add(RegisterEntry(40, PT_U16, access=READ_WRITE | NONVOLATILE, name="Gain"))
+bk2.add(RegisterEntry(41, PT_U8, access=READ_WRITE, name="Volatile"))
+check(apply_boot_state(bk2, nvm) is True, "NVM image → booted from NVM")
+check(bk2.get(R_RESET_DEV).storage[0] == RST_BOOT_EE, "NVM image → BOOT_EE")  # type: ignore[union-attr]
+check(bytes(bk2.get(R_DEVICE_NAME).storage).rstrip(b"\x00") == b"bench-3", "NVM restores DeviceName")  # type: ignore[union-attr]
+check(bytes(bk2.get(40).storage) == b"\x34\x12", "NVM restores NONVOLATILE app register")  # type: ignore[union-attr]
+check(bk2.get(41).storage[0] == 0, "volatile app register keeps default")  # type: ignore[union-attr]
+
+r = request(core2, MSG_WRITE, R_RESET_DEV, PT_U8, bytes([RST_EE]))
+check(r[0][0] == MSG_WRITE and core2[5] == [1], "RST_EE w/ NVM → reply + reboot")
+r = request(core2, MSG_WRITE, R_RESET_DEV, PT_U8, bytes([RST_NAME_TO_DEFAULT]))
+check(r[0][0] == MSG_WRITE and set(nvm.read()) == {40}, "NAME_TO_DEFAULT drops stored name only")  # type: ignore[arg-type]
+r = request(core2, MSG_WRITE, R_RESET_DEV, PT_U8, bytes([RST_DEF]))
+check(r[0][0] == MSG_WRITE and nvm.read() is None, "RST_DEF erases NVM")
+check(core2[5] == [1, 1, 1], "every reset action rebooted once")
+
+
+# ===========================================================================
 print()
 print("Summary: %d pass, %d fail" % (ok, fail))
 sys.exit(0 if fail == 0 else 1)

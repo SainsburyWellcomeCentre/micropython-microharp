@@ -284,8 +284,8 @@ def _fmt_version_array(payload):
 
 
 def _fmt_heartbeat(val):
-    """R_HEARTBEAT (U16): IS_ACTIVE [bit 0], IS_SYNCHRONIZED [bit 1]."""
-    return "IS_ACTIVE=%s  IS_SYNCHRONIZED=%s" % (bool(val & 0x01), bool(val & 0x02))
+    """R_HEARTBEAT (U16): IS_SYNCHRONIZED [bit 0], IS_ACTIVE [bit 1]."""
+    return "IS_ACTIVE=%s  IS_SYNCHRONIZED=%s" % (bool(val & 0x02), bool(val & 0x01))
 
 
 def fmt_payload(addr, payload):
@@ -361,7 +361,7 @@ DEPRECATED = {
 
 
 def _expand_heartbeat(val):
-    return [("  IS_ACTIVE", str(bool(val & 0x01))), ("  IS_SYNCHRONIZED", str(bool(val & 0x02)))]
+    return [("  IS_ACTIVE", str(bool(val & 0x02))), ("  IS_SYNCHRONIZED", str(bool(val & 0x01)))]
 
 
 def _expand_version(payload):

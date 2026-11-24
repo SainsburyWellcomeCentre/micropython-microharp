@@ -12,6 +12,7 @@
         ["microharp/framing.py",   "microharp/framing.py"],
         ["microharp/heartbeat.py", "microharp/heartbeat.py"],
         ["microharp/led.py",       "microharp/led.py"],
+        ["microharp/nvm.py",       "microharp/nvm.py"],
         ["microharp/queue.py",     "microharp/queue.py"],
         ["microharp/registers.py", "microharp/registers.py"],
         ["microharp/transport.py", "microharp/transport.py"]

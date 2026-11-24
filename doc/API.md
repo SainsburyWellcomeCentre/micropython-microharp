@@ -32,10 +32,16 @@ HarpDevice(
     sync_uart=None,             # machine.UART or None
     led_pin=None,               # machine.Pin or None
     who_am_i=0,
-    fw_version=(1, 0),
+    fw_version=(1, 0),          # (major, minor) or (major, minor, patch)
     hw_version=(1, 0),
+    harp_version=(1, 13),
     device_name=b"harp-mpy",
     serial_number=0,
+    core_id=b"",                # R_VERSION CORE_ID (<= 3 chars)
+    interface_hash=b"",         # R_VERSION INTERFACE_HASH (20-byte SHA-1 of device.yml)
+    uid=None,                   # R_UID (<= 16 bytes); None -> machine.unique_id()
+    tag=b"",                    # R_TAG (<= 8 bytes), e.g. short git hash
+    nvm_path=None,              # file for non-volatile registers; None = no NVM
     slab_count=16,
     slab_size=64,
     rx_q_size=8,
@@ -45,6 +51,20 @@ HarpDevice(
 
 Passing `sync_uart=None` disables sync (free-running second tick).
 Passing `led_pin=None` skips the LED task.
+
+### Non-volatile storage
+
+Pass `nvm_path="/harp_nvm.bin"` to give the device persistent storage.
+`R_DEVICE_NAME` and any register created with the `NONVOLATILE` access
+flag (e.g. `access=READ_WRITE | NONVOLATILE`) are then:
+
+- restored from the file when `run()` starts (`R_RESET_DEV` reads `BOOT_EE`);
+- saved by `R_RESET_DEV.SAVE`, erased by `R_RESET_DEV.RST_DEF`.
+
+A host write to `R_DEVICE_NAME` persists the name and reboots. Without
+NVM, `SAVE` / `RST_EE` reply with an error, DeviceName writes keep the
+default, and `R_RESET_DEV` reads `BOOT_DEF`. Restoring only fills
+register storage; `on_write` handlers are not re-run.
 
 ### Register helpers
 
@@ -133,21 +153,27 @@ Fields: `address`, `payload_type`, `n_elements`, `access`, `storage`
 ## Standard registers
 
 Addresses 0..19 are populated automatically by the constructor (Harp
-Device spec). Notable ones:
+Device spec):
 
-| Addr | Name                  | Notes                                      |
-| ---: | --------------------- | ------------------------------------------ |
-|    0 | `R_WHOAMI`            | Identifies device model.                   |
-|    1 | `R_HW_VERSION_H/L`    | Hardware version.                          |
-|    6 | `R_FW_VERSION_H/L`    | Firmware version.                          |
-|    8 | `R_TIMESTAMP_SECOND`  | Read = now; write = set Harp clock.        |
-|    9 | `R_TIMESTAMP_MICRO`   | 32 µs ticks within the current second.     |
-|   10 | `R_OPERATION_CONTROL` | OP_MODE, DUMP, MUTE_RPL, HEARTBEAT_EN, ... |
-|   11 | `R_RESET_DEV`         | Soft-reset trigger.                        |
-|   12 | `R_DEVICE_NAME`       | 25-byte ASCII name (null-padded).          |
-|   13 | `R_SERIAL_NUMBER`     | U16.                                       |
-|   14 | `R_CLOCK_CONFIG`      | Sync source / output config.               |
-|   15 | `R_TIMESTAMP_OFFSET`  | Bus offset compensation.                   |
+| Addr | Name                  | Notes                                                                                                        |
+| ---: | --------------------- | ------------------------------------------------------------------------------------------------------------ |
+|    0 | `R_WHO_AM_I`          | Identifies device model.                                                                                     |
+|  1-7 | `R_*_VERSION_H/L`     | Deprecated legacy version bytes (mirror `R_VERSION`).                                                        |
+|    8 | `R_TIMESTAMP_SECOND`  | Read = now; write = set Harp clock (error while `R_CLOCK_CONFIG` is locked).                                 |
+|    9 | `R_TIMESTAMP_MICRO`   | 32 µs ticks within the current second.                                                                       |
+|   10 | `R_OPERATION_CONTROL` | OP_MODE (Standby/Active; Reserved/Speed → error), DUMP, MUTE_RPL, HEARTBEAT_EN, VISUAL_EN, OPLED_EN.         |
+|   11 | `R_RESET_DEV`         | Read: `BOOT_DEF`/`BOOT_EE`. Write one of `RST_DEF`, `RST_EE`, `SAVE`, `NAME_TO_DEFAULT`, `UPDATE_FIRMWARE`.  |
+|   12 | `R_DEVICE_NAME`       | 25-byte ASCII name (null-padded), non-volatile.                                                              |
+|   13 | `R_SERIAL_NUMBER`     | Deprecated. U16, read-only.                                                                                  |
+|   14 | `R_CLOCK_CONFIG`      | `CLK_LOCK` / `CLK_UNLOCK` gate `R_TIMESTAMP_SECOND` writes. Boots unlocked. No clock output (GEN/REP = 0).   |
+|   15 | reserved              | Read-only placeholder (was `R_TIMESTAMP_OFFSET`).                                                            |
+|   16 | `R_UID`               | 16 bytes; defaults to `machine.unique_id()`.                                                                 |
+|   17 | `R_TAG`               | 8 bytes; `tag=` constructor argument.                                                                        |
+|   18 | `R_HEARTBEAT`         | bit 0 `IS_SYNCHRONIZED`, bit 1 `IS_ACTIVE`. Emitted at 1 Hz in Active mode when `HEARTBEAT_EN`.              |
+|   19 | `R_VERSION`           | 32 bytes: protocol / firmware / hardware semver, `CORE_ID`, `INTERFACE_HASH`.                                |
+
+Every `R_RESET_DEV` action, and a DeviceName write with NVM, sends its
+Write reply first and reboots once the TX queue has drained.
 
 Application registers should start at address 32.
 

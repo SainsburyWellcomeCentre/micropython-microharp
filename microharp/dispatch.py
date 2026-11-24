@@ -190,9 +190,13 @@ class Dispatcher:
             # Spec ordering: WRITE reply first, then DUMP messages (if any).
             if not muted:
                 await self._send_reg_reply(MSG_WRITE, reg, port, secs, ticks)
-            if address == R_OPERATION_CONTROL and (reg.storage[0] & OP_DUMP) and not muted:
-                await self._dump_all_registers(port)
+            if address == R_OPERATION_CONTROL and (reg.storage[0] & OP_DUMP):
+                # DUMP is a one-shot trigger: clear it *before* the dump so
+                # the OperationControl READ inside the dump shows it clear
+                # (spec: Read replies MUST clear DUMP).
                 reg.storage[0] = reg.storage[0] & ~OP_DUMP
+                if not muted:
+                    await self._dump_all_registers(port)
 
         else:
             # MSG_EVENT received from host?  Not defined; ignore.

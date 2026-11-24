@@ -58,8 +58,10 @@ from .registers import (
     R_DEVICE_NAME,
     R_OPERATION_CONTROL,
     OP_OP_MODE_MASK,
+    DEVICE_NAME_LEN,
     install_common_registers,
 )
+from .nvm import Nvm, apply_boot_state
 from .framing import FrameDecoder
 from .transport import (
     StreamTransport,
@@ -76,12 +78,16 @@ from .heartbeat import heartbeat_task
 
 from machine import Pin, UART
 
-DEVICE_NAME_LEN = 25  # per spec; includes null terminator
 
 # Sentinel used by bind_pin_event(level_state=...) and bind_state_register(mapping=...)
 # to distinguish "this key is absent → no transition" from "this key maps to None →
 # transition to the idle state".  Module-private; users never see it.
 _NO_TRANSITION = object()
+
+
+def _semver(v) -> tuple:
+    """Normalize a `(major, minor[, patch])` tuple to 3 elements."""
+    return (v[0], v[1], v[2] if len(v) > 2 else 0)
 
 
 class HarpDevice:
@@ -96,8 +102,23 @@ class HarpDevice:
         UART receiving 100 kbaud Harp sync packets.  None disables sync.
     led_pin : machine.Pin | None
         Status LED.  None disables the LED task.
-    who_am_i, fw_version, hw_version, device_name, serial_number :
-        Identity broadcast in the standard registers.
+    who_am_i, fw_version, hw_version, harp_version, device_name, serial_number :
+        Identity broadcast in the standard registers.  Versions are
+        `(major, minor)` or `(major, minor, patch)` tuples.
+    core_id : bytes
+        Up to 3 chars, R_VERSION CORE_ID field (default zeros).
+    interface_hash : bytes
+        20-byte SHA-1 of the device.yml, R_VERSION INTERFACE_HASH field
+        (default zeros = host skips schema validation).
+    uid : bytes | None
+        R_UID (≤ 16 bytes).  None → `machine.unique_id()`.
+    tag : bytes
+        R_TAG (≤ 8 bytes), e.g. a short git hash.
+    nvm_path : str | None
+        File used as non-volatile storage for R_DEVICE_NAME and any
+        register added with the NONVOLATILE access flag.  None (default)
+        means no NVM: R_RESET_DEV SAVE / RST_EE reply with an error and
+        DeviceName writes keep the default.
     slab_count, slab_size, rx_q_size, tx_q_size :
         Resource sizing for the slab pool and queues.
     """
@@ -114,6 +135,11 @@ class HarpDevice:
         harp_version: tuple = (1, 13),
         device_name: bytes = b"harp-mpy",
         serial_number: int = 0,
+        core_id: bytes = b"",
+        interface_hash: bytes = b"",
+        uid: bytes | None = None,
+        tag: bytes = b"",
+        nvm_path: str | None = None,
         slab_count: int = DEFAULT_SLAB_COUNT,
         slab_size: int = DEFAULT_SLAB_SIZE,
         rx_q_size: int = 8,
@@ -129,21 +155,33 @@ class HarpDevice:
         self.sync_uart = sync_uart
         self.led_pin = led_pin
         self.decoder = FrameDecoder(max_payload=slab_size - 12)
+        self.nvm = Nvm(nvm_path) if nvm_path else None
 
+        fw = _semver(fw_version)
+        hw = _semver(hw_version)
+        harp = _semver(harp_version)
         install_common_registers(
             self.bank,
             who_am_i=who_am_i,
-            fw_major=fw_version[0],
-            fw_minor=fw_version[1],
-            hw_major=hw_version[0],
-            hw_minor=hw_version[1],
-            harp_major=harp_version[0],
-            harp_minor=harp_version[1],
+            fw_major=fw[0],
+            fw_minor=fw[1],
+            fw_patch=fw[2],
+            hw_major=hw[0],
+            hw_minor=hw[1],
+            hw_patch=hw[2],
+            harp_major=harp[0],
+            harp_minor=harp[1],
+            harp_patch=harp[2],
+            core_id=core_id,
+            interface_hash=interface_hash,
             device_name=device_name,
             serial_number=serial_number,
+            uid=uid,
+            tag=tag,
             clock=self.clock,
             tx_q=self.tx_q,
             slab_pool=self.slabs,
+            nvm=self.nvm,
         )
         self.dispatcher = Dispatcher(self.bank, self.clock, self.rx_q, self.tx_q, self.slabs)
 
@@ -194,14 +232,21 @@ class HarpDevice:
         return reg
 
     def set_name(self, name: str):
-        """Set the DeviceName register (max 24 chars, null-padded to 25 bytes)."""
+        """Set the default DeviceName (max 24 chars, null-padded to 25 bytes).
+
+        A name stored in NVM (written by the host) overrides this at run().
+        """
         encoded = name.encode("ascii")[: DEVICE_NAME_LEN - 1]
         reg = self.bank.get(R_DEVICE_NAME)
         assert reg is not None  # installed by install_common_registers()
         reg.storage[:] = encoded + bytes(DEVICE_NAME_LEN - len(encoded))
 
     def set_harp_version(self, version: tuple):
-        """Set the HARP_VERSION registers and the Version register's PROTOCOL field."""
+        """Set the HARP_VERSION registers and the Version register's PROTOCOL field.
+
+        `version` is `(major, minor)` or `(major, minor, patch)`.
+        """
+        version = _semver(version)
         reg_h = self.bank.get(R_HARP_VERSION_H)
         reg_l = self.bank.get(R_HARP_VERSION_L)
         reg_v = self.bank.get(R_VERSION)
@@ -210,6 +255,7 @@ class HarpDevice:
         reg_l.storage[0] = version[1]
         reg_v.storage[0] = version[0]
         reg_v.storage[1] = version[1]
+        reg_v.storage[2] = version[2]
 
     # Typed shortcuts (just sugar over add_register with PT_* preset).
     def add_u8(self, address: int, **kw):
@@ -752,6 +798,9 @@ class HarpDevice:
 
     async def run(self):
         """Launch all core tasks + event sources + user tasks."""
+        # All registers exist now: restore NONVOLATILE values from NVM and
+        # publish the boot source (BOOT_EE / BOOT_DEF) in R_RESET_DEV.
+        apply_boot_state(self.bank, self.nvm)
         tasks: list = [
             usb_rx_task(self.transport, self.decoder, self.rx_q, self.slabs),
             usb_tx_task(self.transport, self.tx_q, self.slabs),

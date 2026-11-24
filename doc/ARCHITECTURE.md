@@ -9,6 +9,7 @@ microharp/
   clock.py        Clock + sync_task (UART RX of sync packets)
   transport.py    Cdc / Uart / generic Stream transports + slab pool
   registers.py    RegisterEntry, RegisterBank, common registers 0..19
+  nvm.py          File-backed non-volatile register storage
   dispatch.py     routes parsed frames to register handlers
   events.py       IRQ ring + EventSource (timestamp-at-IRQ)
   led.py          status LED task, clock-synchronized when locked
@@ -106,9 +107,10 @@ blink is the explicit "unsynced" tell. Gated by `VISUAL_EN` and
 
 ## Heartbeat
 
-Publishes an `R_TIMESTAMP_SECOND` (U32) EVENT at 1 Hz when
-`OperationControl.HEARTBEAT_EN` (bit 2) is set and the device is in
-Active mode. `ALIVE_EN` (bit 7, deprecated) uses the same event type.
+Publishes an `R_HEARTBEAT` (U16: bit 0 `IS_SYNCHRONIZED`, bit 1
+`IS_ACTIVE`) EVENT at 1 Hz when `OperationControl.HEARTBEAT_EN` (bit 2)
+is set and the device is in Active mode. If only `ALIVE_EN` (bit 7,
+deprecated) is set, it emits `R_TIMESTAMP_SECOND` (U32) instead.
 
 ## Operation mode gating
 

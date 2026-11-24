@@ -99,6 +99,7 @@ microharp/
   clock.py        Clock + sync_task (UART RX of sync packets)
   transport.py    Cdc / Uart / generic Stream transports + slab pool
   registers.py    RegisterEntry, RegisterBank, common registers 0..19
+  nvm.py          File-backed non-volatile register storage
   dispatch.py     routes parsed frames to register handlers
   events.py       IRQ ring + EventSource (timestamp-at-IRQ)
   led.py          status LED task, clock-synchronized when locked

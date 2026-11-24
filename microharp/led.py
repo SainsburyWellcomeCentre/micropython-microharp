@@ -10,9 +10,9 @@ Wake source while synced is `clock.tick.subscribe()` — a per-subscriber
 asyncio.Event the clock fires on each second.  No ThreadSafeFlag needed:
 the producer (sync_task / clock.apply_sync) is itself an asyncio task.
 
-The OperationControl register's VISUAL_EN bit gates whether the LED runs at
-all; if cleared, the task simply turns the pin off and waits for it to be
-re-enabled.
+The OperationControl register's VISUAL_EN and OPLED_EN bits gate whether
+the LED runs at all; if either is cleared, the task simply turns the pin
+off and waits for it to be re-enabled.
 """
 
 import asyncio
@@ -28,7 +28,10 @@ from .registers import (
     OP_OP_MODE_MASK,
     OP_OP_MODE_ACTIVE,
     OP_VISUAL_EN,
+    OP_OPLED_EN,
 )
+
+_LED_EN = OP_VISUAL_EN | OP_OPLED_EN
 
 
 async def led_task(pin: Pin, clock: Clock, bank: RegisterBank):
@@ -40,7 +43,9 @@ async def led_task(pin: Pin, clock: Clock, bank: RegisterBank):
     op_reg = bank.get(R_OPERATION_CONTROL)
 
     def visual_en() -> bool:
-        return op_reg is None or (op_reg.storage[0] & OP_VISUAL_EN)
+        # The status LED shows the operation mode, so it needs both
+        # VISUAL_EN (visual indicators on) and OPLED_EN (op-mode LED on).
+        return op_reg is None or (op_reg.storage[0] & _LED_EN) == _LED_EN
 
     def is_active() -> bool:
         return op_reg is not None and (op_reg.storage[0] & OP_OP_MODE_MASK) == OP_OP_MODE_ACTIVE

@@ -17,6 +17,7 @@ Common registers (addresses 0..31 per the Harp Device spec) are populated
 by `install_common_registers()`.
 """
 
+import asyncio
 from micropython import const
 from .framing import (
     PT_U8,
@@ -30,6 +31,9 @@ READ_ONLY = const(0x01)
 WRITE_ONLY = const(0x02)
 READ_WRITE = const(0x03)
 EVENT = const(0x04)
+# Persisted by R_RESET_DEV.SAVE and restored at boot when NVM is configured
+# (see microharp.nvm).  Purely a flag — does not affect read/write access.
+NONVOLATILE = const(0x08)
 
 
 class RegisterEntry:
@@ -140,6 +144,76 @@ OP_ALIVE_EN = const(0x80)  # bit 7: emit R_TIMESTAMP_SECOND (deprecated)
 #   ALIVE_EN | OPLED_EN | VISUAL_EN | HEARTBEAT_EN, OP_MODE=Standby = 0xE4.
 OP_DEFAULT = const(OP_ALIVE_EN | OP_OPLED_EN | OP_VISUAL_EN | OP_HEARTBEAT_EN)
 
+# ResetDevice bits — per Harp Device.md §R_RESET_DEV.
+RST_DEF = const(0x01)  # bit 0: erase NVM, reboot with defaults
+RST_EE = const(0x02)  # bit 1: reboot from NVM (error if no NVM)
+RST_SAVE = const(0x04)  # bit 2: save NONVOLATILE registers, reboot (error if no NVM)
+RST_NAME_TO_DEFAULT = const(0x08)  # bit 3: restore default DeviceName, reboot
+RST_UPDATE_FIRMWARE = const(0x20)  # bit 5: enter bootloader
+RST_BOOT_DEF = const(0x40)  # bit 6 (read-only): booted with default values
+RST_BOOT_EE = const(0x80)  # bit 7 (read-only): booted from NVM
+_RST_ACTIONS = const(RST_DEF | RST_EE | RST_SAVE | RST_NAME_TO_DEFAULT | RST_UPDATE_FIRMWARE)
+
+# ClockConfig bits — per Harp Device.md §R_CLOCK_CONFIG.
+CLK_REP = const(0x01)  # bit 0: repeat Clock Input on Clock Output
+CLK_GEN = const(0x02)  # bit 1: generate sync clock on Clock Output
+CLK_REP_ABLE = const(0x08)  # bit 3 (read-only): device can repeat
+CLK_GEN_ABLE = const(0x10)  # bit 4 (read-only): device can generate
+CLK_UNLOCK = const(0x40)  # bit 6: R_TIMESTAMP_SECOND writable
+CLK_LOCK = const(0x80)  # bit 7: R_TIMESTAMP_SECOND write-protected
+
+# Heartbeat bits — per Harp Device.md §R_HEARTBEAT.
+HB_IS_SYNCHRONIZED = const(0x01)  # bit 0
+HB_IS_ACTIVE = const(0x02)  # bit 1
+
+DEVICE_NAME_LEN = const(25)
+UID_LEN = const(16)
+TAG_LEN = const(8)
+VERSION_LEN = const(32)
+
+# Non-None return from an on_write handler → dispatcher sends a WRITE error.
+_ERR = 1
+
+
+def _fixed(data, n: int, what: str) -> bytes:
+    """Return `data` as exactly `n` bytes, zero-padded.  Raises if too long."""
+    data = bytes(data or b"")
+    if len(data) > n:
+        raise ValueError("%s longer than %d bytes" % (what, n))
+    return data + bytes(n - len(data))
+
+
+def _default_reboot():
+    try:
+        import machine
+
+        machine.reset()
+    except Exception:
+        pass  # CPython tests / ports without machine.reset
+
+
+def _default_bootloader():
+    import machine
+
+    machine.bootloader()
+
+
+async def _after_reply(action, tx_q):
+    """Run `action()` once the pending Write reply has left the TX queue.
+
+    The spec requires the Write reply to be sent *before* a reboot.  The
+    dispatcher enqueues that reply after on_write returns, so we yield,
+    wait for the TX queue to drain (bounded), then give the transport a
+    moment to push the bytes out.
+    """
+    await asyncio.sleep(0)
+    for _ in range(50):
+        if tx_q is None or tx_q.empty():
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    action()
+
 
 def install_common_registers(
     bank: RegisterBank,
@@ -147,34 +221,71 @@ def install_common_registers(
     who_am_i: int = 0,
     fw_major: int = 1,
     fw_minor: int = 0,
+    fw_patch: int = 0,
     hw_major: int = 1,
     hw_minor: int = 0,
+    hw_patch: int = 0,
     harp_major: int = 1,
     harp_minor: int = 13,
+    harp_patch: int = 0,
+    core_id: bytes = b"",
+    interface_hash: bytes = b"",
     device_name: bytes = b"harp-mpy",
     serial_number: int = 0,
+    uid=None,
+    tag: bytes = b"",
     clock=None,
     tx_q=None,
-    slab_pool=None
+    slab_pool=None,
+    nvm=None,
+    reboot=None,
+    bootloader=None
 ):
     """Populate `bank` with the standard 0..31 registers.
 
-    `clock` is the microharp.Clock instance; the timestamp register's `on_read`
-    callback uses it to refresh storage just-in-time.
+    `clock` is the microharp.Clock instance; the timestamp registers'
+    callbacks use it.  `tx_q` lets reboot-type actions (R_RESET_DEV,
+    R_DEVICE_NAME) wait for their Write reply to drain before rebooting.
+    `slab_pool` is accepted for backward compatibility and unused.
 
-    `tx_q` and `slab_pool` are required for the OperationControl `DUMP`
-    handler — it walks every register and pushes a READ reply for each
-    onto the TX queue, so it needs the same slab pool the dispatcher uses.
+    `nvm` is an optional `microharp.nvm.Nvm`.  Without it the device has
+    no persistent storage: R_RESET_DEV.SAVE / RST_EE reply with an error,
+    R_DEVICE_NAME writes keep the default name, and reads of R_RESET_DEV
+    report BOOT_DEF.  Call `microharp.nvm.apply_boot_state(bank, nvm)`
+    once all registers exist to restore stored values.
+
+    `uid` defaults to `machine.unique_id()` (zero-padded to 16 bytes) when
+    available.  `tag` is up to 8 opaque bytes (e.g. a short git hash).
+    `core_id` is a 3-character MCU core code and `interface_hash` the
+    20-byte SHA-1 of device.yml; both default to zeros.
+
+    `reboot` / `bootloader` are zero-arg callables (defaults:
+    `machine.reset` / `machine.bootloader`), injectable for testing.
     """
     import struct
+
+    if reboot is None:
+        reboot = _default_reboot
+    if bootloader is None:
+        try:
+            import machine
+
+            if hasattr(machine, "bootloader"):
+                bootloader = _default_bootloader
+        except ImportError:
+            pass
 
     def _add(addr, pt, n=1, access=READ_WRITE, name="", on_write=None, on_read=None):
         return bank.add(RegisterEntry(addr, pt, n, access, on_read, on_write, name))
 
-    # WHO_AM_I  ── identifies the device class.
+    def _schedule(action):
+        asyncio.create_task(_after_reply(action, tx_q))
+
+    # ---- 000 WHO_AM_I ------------------------------------------------------
     r = _add(R_WHO_AM_I, PT_U16, access=READ_ONLY, name="WhoAmI")
     struct.pack_into("<H", r.storage, 0, who_am_i)
 
+    # ---- 001..007 legacy version registers (deprecated, kept readable) ----
     r = _add(R_HW_VERSION_H, PT_U8, access=READ_ONLY, name="HwVersionH")
     r.storage[0] = hw_major
     r = _add(R_HW_VERSION_L, PT_U8, access=READ_ONLY, name="HwVersionL")
@@ -192,7 +303,7 @@ def install_common_registers(
     r = _add(R_FW_VERSION_L, PT_U8, access=READ_ONLY, name="FwVersionL")
     r.storage[0] = fw_minor
 
-    # TIMESTAMP_SECOND is read-on-demand from the Clock.
+    # ---- 008 / 009 TIMESTAMP_SECOND / TIMESTAMP_MICRO -----------------------
     async def _read_secs(reg, _clk=clock):
         if _clk is None:
             return
@@ -205,18 +316,17 @@ def install_common_registers(
         _, ticks = _clk.now()
         struct.pack_into("<H", reg.storage, 0, ticks & 0xFFFF)
 
-    # TimestampSecond is read-write per spec — the host re-anchors the
-    # device clock by writing this register.  on_write captures
-    # `_ticks_us()` as early in the handler chain as possible (here in
-    # the on_write callback) so the residual constant latency between
-    # dispatch's clock.now() and our anchor update stays small.  If
-    # you've measured that residual, pass it via
-    # `clock.set_seconds(..., latency_us=N)` from a wrapping handler.
-    async def _write_secs(reg, payload, _clk=clock):
-        if _clk is None:
-            return None
+    # The host re-anchors the device clock by writing TimestampSecond,
+    # unless R_CLOCK_CONFIG.CLK_LOCK is set (-> error reply).  on_write
+    # re-anchors as early in the handler chain as possible; residual
+    # constant latency can be compensated via clock.set_seconds(latency_us=).
+    async def _write_secs(reg, payload, _clk=clock, _bank=bank):
+        cc = _bank.get(R_CLOCK_CONFIG)
+        if cc is not None and (cc.storage[0] & CLK_LOCK):
+            return _ERR
         new = struct.unpack_from("<I", payload, 0)[0]
-        _clk.set_seconds(new)
+        if _clk is not None:
+            _clk.set_seconds(new)
         struct.pack_into("<I", reg.storage, 0, new & 0xFFFFFFFF)
         return None
 
@@ -225,87 +335,174 @@ def install_common_registers(
     )
     _add(R_TIMESTAMP_MICRO, PT_U16, access=READ_ONLY, name="TimestampTicks", on_read=_read_ticks)
 
-    # OperationControl: spec default 0xE4 = ALIVE_EN | OPLED_EN |
-    # VISUAL_EN | HEARTBEAT_EN, OP_MODE=Standby.  Per Device.md §"Operation
-    # Mode": NotConnected → must enter Standby.  HarpDevice's CDC
-    # line-state callback handles that transition explicitly.
-    op = _add(R_OPERATION_CONTROL, PT_U8, access=READ_WRITE, name="OperationControl")
-    op.storage[0] = OP_DEFAULT
-
-    # The DUMP bit, when set in a Write request, instructs the Device to
-    # send a sequence of Read replies — one per register — *after* the
-    # Write reply (Device.md §Request-Reply).  We can't enqueue the dump
-    # before the Write reply from inside on_write (Dispatcher posts the
-    # WRITE reply *after* on_write returns).  Instead, on_write just
-    # records that a dump is pending; the dispatcher handles the order.
-    if tx_q is not None and slab_pool is not None:
-
-        async def _op_on_write(reg, payload):
-            new = payload[0]
-            # Apply the new value but keep the DUMP bit visible to the
-            # dispatcher so it can do the right ordering.  The bit is
-            # auto-cleared right after the dump completes.
-            reg.storage[0] = new
-            return None
-
-        op.on_write = _op_on_write
-
-    # ResetDevice: write-only command.  Any non-zero write triggers a soft
-    # reset (machine.reset()).  Caller may override.
-    async def _reset_on_write(reg, payload):
-        if payload[0]:
-            try:
-                import machine
-
-                machine.reset()
-            except Exception:
-                pass  # CPython tests / non-machine port
+    # ---- 010 OPERATION_CTRL -------------------------------------------------
+    # Spec default 0xE4 = ALIVE_EN | OPLED_EN | VISUAL_EN | HEARTBEAT_EN,
+    # OP_MODE=Standby.  Only Standby and Active are supported; Reserved (2)
+    # and the deprecated Speed mode (3) get an error reply and leave the
+    # register unchanged.  DUMP ordering (Write reply, then the dump, then
+    # clear) is handled by the dispatcher.  NotConnected -> Standby is
+    # handled by HarpDevice's CDC line-state callback.
+    async def _op_on_write(reg, payload):
+        new = payload[0]
+        mode = new & OP_OP_MODE_MASK
+        if mode != OP_OP_MODE_STANDBY and mode != OP_OP_MODE_ACTIVE:
+            return _ERR
+        reg.storage[0] = new
         return None
 
-    rd = _add(R_RESET_DEV, PT_U8, access=WRITE_ONLY, name="ResetDevice")
-    rd.on_write = _reset_on_write
+    op = _add(R_OPERATION_CONTROL, PT_U8, access=READ_WRITE, name="OperationControl", on_write=_op_on_write)
+    op.storage[0] = OP_DEFAULT
 
-    # DeviceName: U8 array.  Truncate to 24 bytes, null-pad to a fixed 25-byte slot.
-    name_len = 25
-    device_name = device_name[: name_len - 1]
-    rn = bank.add(RegisterEntry(R_DEVICE_NAME, PT_U8, n_elements=name_len, access=READ_WRITE, name="DeviceName"))
-    rn.storage[:name_len] = device_name + bytes(name_len - len(device_name))
+    # ---- 011 RESET_DEV ------------------------------------------------------
+    # Storage holds only the read-only boot-source bits (BOOT_DEF / BOOT_EE);
+    # action bits always read back as 0.  One action bit per write.  Every
+    # action that reboots does so only after the Write reply has drained.
+    async def _reset_on_write(reg, payload, _bank=bank, _nvm=nvm):
+        v = payload[0]
+        if v & ~_RST_ACTIONS & 0xFF:
+            return _ERR  # read-only BOOT_* bits or reserved bit 4
+        if v == 0:
+            return None
+        if v & (v - 1):
+            return _ERR  # more than one action requested
+        try:
+            if v == RST_DEF:
+                if _nvm is not None:
+                    _nvm.erase()
+                _schedule(reboot)
+            elif v == RST_EE:
+                if _nvm is None:
+                    return _ERR
+                _schedule(reboot)
+            elif v == RST_SAVE:
+                if _nvm is None:
+                    return _ERR
+                _nvm.write(_nvm.snapshot(_bank))
+                _schedule(reboot)
+            elif v == RST_NAME_TO_DEFAULT:
+                if _nvm is not None:
+                    entries = _nvm.read()
+                    if entries is not None and R_DEVICE_NAME in entries:
+                        del entries[R_DEVICE_NAME]
+                        _nvm.write(entries)
+                _schedule(reboot)
+            else:  # RST_UPDATE_FIRMWARE
+                if bootloader is None:
+                    return _ERR
+                _schedule(bootloader)
+        except OSError:
+            return _ERR
+        return None
 
+    rd = _add(R_RESET_DEV, PT_U8, access=READ_WRITE, name="ResetDevice", on_write=_reset_on_write)
+    rd.storage[0] = RST_BOOT_DEF  # updated by nvm.apply_boot_state()
+
+    # ---- 012 DEVICE_NAME ----------------------------------------------------
+    # Zero-padded 25-byte string, NONVOLATILE.  With NVM a write persists
+    # the new name and reboots; without NVM the write is acknowledged with
+    # the unchanged default value (spec).
+    async def _name_on_write(reg, payload, _nvm=nvm):
+        if _nvm is None:
+            return None
+        raw = bytes(payload)
+        end = raw.find(b"\x00")
+        if end < 0:
+            end = DEVICE_NAME_LEN - 1  # force a terminating NUL
+        new = raw[:end] + bytes(DEVICE_NAME_LEN - end)
+        try:
+            entries = _nvm.read() or {}
+            entries[R_DEVICE_NAME] = new
+            _nvm.write(entries)
+        except OSError:
+            return _ERR
+        reg.storage[:] = new
+        _schedule(reboot)
+        return None
+
+    rn = bank.add(
+        RegisterEntry(
+            R_DEVICE_NAME,
+            PT_U8,
+            n_elements=DEVICE_NAME_LEN,
+            access=READ_WRITE | NONVOLATILE,
+            on_write=_name_on_write,
+            name="DeviceName",
+        )
+    )
+    rn.storage[:] = _fixed(device_name[: DEVICE_NAME_LEN - 1], DEVICE_NAME_LEN, "device_name")
+
+    # ---- 013 SERIAL_NUMBER (deprecated) -------------------------------------
     rsn = _add(R_SERIAL_NUMBER, PT_U16, access=READ_ONLY, name="SerialNumber")
     struct.pack_into("<H", rsn.storage, 0, serial_number)
 
-    _add(R_CLOCK_CONFIG, PT_U8, access=READ_WRITE, name="ClockConfig")
+    # ---- 014 CLOCK_CONFIG ---------------------------------------------------
+    # Boots unlocked.  CLK_LOCK / CLK_UNLOCK gate writes to
+    # R_TIMESTAMP_SECOND.  This firmware has no Clock Output connector, so
+    # GEN_ABLE / REP_ABLE read 0 and CLK_GEN / CLK_REP are ignored (read
+    # back as 0).  Setting LOCK and UNLOCK together is an error.
+    async def _clk_on_write(reg, payload):
+        v = payload[0]
+        if (v & CLK_LOCK) and (v & CLK_UNLOCK):
+            return _ERR
+        cur = reg.storage[0]
+        if v & CLK_LOCK:
+            cur = (cur & ~CLK_UNLOCK) | CLK_LOCK
+        elif v & CLK_UNLOCK:
+            cur = (cur & ~CLK_LOCK) | CLK_UNLOCK
+        reg.storage[0] = cur & (CLK_LOCK | CLK_UNLOCK | CLK_GEN_ABLE | CLK_REP_ABLE)
+        return None
 
-    # Newer common registers (Harp Device 1.13+).
-    _add(R_TIMESTAMP_OFFSET, PT_U8, access=READ_ONLY, name="TimestampOffset")
-    bank.add(RegisterEntry(R_UID, PT_U8, n_elements=16, access=READ_ONLY, name="UID"))
-    bank.add(RegisterEntry(R_TAG, PT_U8, n_elements=8, access=READ_ONLY, name="Tag"))
+    rc = _add(R_CLOCK_CONFIG, PT_U8, access=READ_WRITE, name="ClockConfig", on_write=_clk_on_write)
+    rc.storage[0] = CLK_UNLOCK
 
-    # R_HEARTBEAT: U16, read-only.  Bits 0=IS_ACTIVE, 1=IS_SYNCHRONIZED.
-    # Refresh just-in-time on every read so the host always sees current
-    # state; the heartbeat task also calls _read_hb before emitting.
+    # ---- 015 Reserved (formerly TIMESTAMP_OFFSET) ---------------------------
+    _add(R_TIMESTAMP_OFFSET, PT_U8, access=READ_ONLY, name="Reserved")
+
+    # ---- 016 UID ------------------------------------------------------------
+    if uid is None:
+        try:
+            import machine
+
+            uid = machine.unique_id()[:UID_LEN]
+        except Exception:
+            uid = b""
+    ru = bank.add(RegisterEntry(R_UID, PT_U8, n_elements=UID_LEN, access=READ_ONLY, name="UID"))
+    ru.storage[:] = _fixed(uid, UID_LEN, "uid")
+
+    # ---- 017 TAG ------------------------------------------------------------
+    rt = bank.add(RegisterEntry(R_TAG, PT_U8, n_elements=TAG_LEN, access=READ_ONLY, name="Tag"))
+    rt.storage[:] = _fixed(tag, TAG_LEN, "tag")
+
+    # ---- 018 HEARTBEAT ------------------------------------------------------
+    # Bit 0 IS_SYNCHRONIZED, bit 1 IS_ACTIVE.  Refreshed on every read; the
+    # heartbeat task emits it at 1 Hz in Active mode when HEARTBEAT_EN.
     async def _read_hb(reg, _bank=bank, _clock=clock):
-        op = _bank.get(R_OPERATION_CONTROL)
-        is_active = bool(op and (op.storage[0] & OP_OP_MODE_MASK) == OP_OP_MODE_ACTIVE)
-        is_synced = bool(_clock and _clock.synced)
-        v = (1 if is_active else 0) | (2 if is_synced else 0)
-        struct.pack_into("<H", reg.storage, 0, v)
+        struct.pack_into("<H", reg.storage, 0, heartbeat_value(_bank, _clock))
 
     _add(R_HEARTBEAT, PT_U16, access=READ_ONLY, name="Heartbeat", on_read=_read_hb)
 
-    # R_VERSION: 32-byte U8 array per spec §R_VERSION.  Layout:
-    #   [0..2]  PROTOCOL  (semver: major, minor, patch)
-    #   [3..5]  FIRMWARE  (semver)
-    #   [6..8]  HARDWARE  (semver)
-    #   [9..11] CORE_ID   (3 chars)
-    #   [12..31] INTERFACE_HASH (SHA-1 of device.yml; little-endian; 0 = unset)
-    rv = bank.add(RegisterEntry(R_VERSION, PT_U8, n_elements=32, access=READ_ONLY, name="Version"))
-    rv.storage[0] = harp_major
-    rv.storage[1] = harp_minor
-    rv.storage[3] = fw_major
-    rv.storage[4] = fw_minor
-    rv.storage[6] = hw_major
-    rv.storage[7] = hw_minor
-    # Patch bytes, CORE_ID, INTERFACE_HASH default to zero per spec.
+    # ---- 019 VERSION --------------------------------------------------------
+    #   [0..2]   PROTOCOL  (major, minor, patch)
+    #   [3..5]   FIRMWARE  (major, minor, patch)
+    #   [6..8]   HARDWARE  (major, minor, patch)
+    #   [9..11]  CORE_ID   (3 chars)
+    #   [12..31] INTERFACE_HASH (SHA-1 of device.yml; all-zero = unset)
+    rv = bank.add(RegisterEntry(R_VERSION, PT_U8, n_elements=VERSION_LEN, access=READ_ONLY, name="Version"))
+    rv.storage[0:9] = bytes(
+        (harp_major, harp_minor, harp_patch, fw_major, fw_minor, fw_patch, hw_major, hw_minor, hw_patch)
+    )
+    rv.storage[9:12] = _fixed(core_id, 3, "core_id")
+    rv.storage[12:32] = _fixed(interface_hash, 20, "interface_hash")
 
     return bank
+
+
+def heartbeat_value(bank: RegisterBank, clock=None) -> int:
+    """Current R_HEARTBEAT value (IS_SYNCHRONIZED | IS_ACTIVE bits)."""
+    op = bank.get(R_OPERATION_CONTROL)
+    v = 0
+    if op is not None and (op.storage[0] & OP_OP_MODE_MASK) == OP_OP_MODE_ACTIVE:
+        v |= HB_IS_ACTIVE
+    if clock is not None and clock.synced:
+        v |= HB_IS_SYNCHRONIZED
+    return v

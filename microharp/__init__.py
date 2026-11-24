@@ -11,6 +11,7 @@ Layout
     microharp/framing.py     Encode / decode of the 8-bit binary protocol
     microharp/transport.py   Cdc / Uart / Stream transports + slab pool
     microharp/registers.py   RegisterEntry, RegisterBank, common registers 0..19
+    microharp/nvm.py         File-backed non-volatile register storage
     microharp/dispatch.py    Dispatcher routing parsed frames -> register handlers
     microharp/events.py      Event source helper (timestamp at IRQ, encode in task)
     microharp/heartbeat.py   1 Hz heartbeat EVENT task
@@ -68,7 +69,8 @@ from .framing import (
     PT_HAS_TIMESTAMP,
 )
 from .clock import Clock
-from .registers import RegisterEntry, RegisterBank, READ_ONLY, WRITE_ONLY, READ_WRITE, EVENT
+from .registers import RegisterEntry, RegisterBank, READ_ONLY, WRITE_ONLY, READ_WRITE, EVENT, NONVOLATILE
+from .nvm import Nvm
 from .transport import (
     CdcTransport,
     UartTransport,
